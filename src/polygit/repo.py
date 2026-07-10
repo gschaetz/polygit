@@ -18,10 +18,11 @@ _Y  = "\033[33m" if _USE_COLOR else ""   # yellow
 _DIM = "\033[2m" if _USE_COLOR else ""   # dim
 _RST = "\033[0m" if _USE_COLOR else ""   # reset
 
-OK  = f"{_G}✓{_RST}"
-UPD = f"{_C}↓{_RST}"
-ERR = f"{_R}✗{_RST}"
-NEW = f"{_C}+{_RST}"
+OK   = f"{_G}✓{_RST}"
+UPD  = f"{_G}↓{_RST}"
+ERR  = f"{_R}✗{_RST}"
+WARN = f"{_Y}⚠{_RST}"
+NEW  = f"{_C}+{_RST}"
 
 
 def _emit(lines):
@@ -118,7 +119,7 @@ def _pull_one(platform, local_path, d):
     if result.returncode != 0:
         err = result.stderr.strip()
         if "no tracking information" in err or "no upstream" in err.lower():
-            lines.append(f"{ERR} {label}: no upstream branch set")
+            lines.append(f"{WARN} {label}: no upstream branch set")
         else:
             lines.append(f"{ERR} {label}: {err.splitlines()[0]}")
     elif result.stdout.strip() and result.stdout.strip() != "Already up to date.":
