@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "polygit"
+version = "0.1.0"
+description = "Manage multiple git repos from a single .pgit config file."
+readme = "README.md"
+license = { file = "LICENSE.txt" }
+authors = [{ name = "Gary Schaetz", email = "gary@schaetzkc.com" }]
+requires-python = ">=3.8"
+keywords = ["git", "repos", "multi-repo", "polygit", "pgit", "devtools"]
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.urls]
+Repository = "https://gitlab.com/gary.schaetz/public/polygit"
+
+[project.scripts]
+pgit = "polygit.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/polygit"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]

@@ -1,0 +1,57 @@
+import sys
+import argparse
+from .config import find_config, load_config
+from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push
+from .repos import cmd_repos
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="pgit",
+        description="Manage multiple git repos defined in a .pgit config file."
+    )
+    sub = parser.add_subparsers(dest="command", metavar="command")
+
+    sub.add_parser("sync",   help="Clone missing repos and fetch all")
+    sub.add_parser("status", help="Show repos with uncommitted changes")
+    sub.add_parser("pull",   help="Pull all repos, auto-stashing local changes")
+
+    push_p = sub.add_parser("push", help="Commit and push dirty repos")
+    mode_g = push_p.add_mutually_exclusive_group()
+    mode_g.add_argument("--interactive", dest="push_mode", action="store_const",
+                        const="interactive", help="Prompt per repo (default)")
+    mode_g.add_argument("--all", dest="push_mode", action="store_const",
+                        const="all", help="One commit message for all dirty repos")
+    mode_g.add_argument("--wip", dest="push_mode", action="store_const",
+                        const="wip", help='Auto-commit with "WIP <timestamp>"')
+    push_p.set_defaults(push_mode="interactive")
+
+    sub.add_parser("repos", help="Discover drift between .pgit and the filesystem")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(0)
+
+    config_path = find_config()
+    if config_path is None:
+        print("Error: no .pgit config file found in this directory or any parent.", file=sys.stderr)
+        print("Create a .pgit file in your repos root directory.", file=sys.stderr)
+        sys.exit(1)
+
+    base   = config_path.parent
+    config = load_config(config_path)
+
+    commands = {
+        "sync":   lambda: cmd_sync(config, base),
+        "status": lambda: cmd_status(config, base),
+        "pull":   lambda: cmd_pull(config, base),
+        "push":   lambda: cmd_push(config, base, mode=args.push_mode),
+        "repos":  lambda: cmd_repos(config, base, config_path),
+    }
+    commands[args.command]()
+
+
+if __name__ == "__main__":
+    main()
