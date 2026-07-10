@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -7,6 +8,20 @@ from .config import HOSTS
 
 _print_lock = threading.Lock()
 MAX_WORKERS = 8
+
+_USE_COLOR = sys.stdout.isatty()
+
+_G  = "\033[32m" if _USE_COLOR else ""   # green
+_R  = "\033[31m" if _USE_COLOR else ""   # red
+_C  = "\033[36m" if _USE_COLOR else ""   # cyan
+_Y  = "\033[33m" if _USE_COLOR else ""   # yellow
+_DIM = "\033[2m" if _USE_COLOR else ""   # dim
+_RST = "\033[0m" if _USE_COLOR else ""   # reset
+
+OK  = f"{_G}✓{_RST}"
+UPD = f"{_C}↓{_RST}"
+ERR = f"{_R}✗{_RST}"
+NEW = f"{_C}+{_RST}"
 
 
 def _emit(lines):
@@ -53,36 +68,39 @@ def is_dirty(d):
 
 
 def _commit_and_push(d, label, msg):
-    lines = [f"Committing {label}..."]
+    lines = [f"  Committing {label}..."]
     subprocess.run(["git", "-C", str(d), "add", "-A"], capture_output=True)
     subprocess.run(["git", "-C", str(d), "commit", "-m", msg], capture_output=True)
     result = subprocess.run(["git", "-C", str(d), "push"], capture_output=True, text=True)
     if result.returncode != 0:
-        lines.append(f"  Push failed: {result.stderr.strip()}")
+        lines.append(f"{ERR} {label}: push failed — {result.stderr.strip().splitlines()[0]}")
     else:
-        lines.append(f"  Pushed.")
+        lines.append(f"{UPD} {label}: pushed")
     _emit(lines)
 
 
 def _sync_one(platform, local_path, remote_path, d):
     url = f"{HOSTS[platform]}:{remote_path}.git"
+    label = f"{platform}/{local_path}"
     if (d / ".git").exists():
         result = subprocess.run(
             ["git", "-C", str(d), "fetch", "--all", "-q"],
             capture_output=True, text=True
         )
-        lines = [f"Fetched  {platform}/{local_path}"]
-        if result.stderr.strip():
-            lines.append(f"  {result.stderr.strip()}")
+        if result.returncode != 0:
+            lines = [f"{ERR} {label}: {result.stderr.strip().splitlines()[0]}"]
+        else:
+            lines = [f"{OK} {_DIM}{label}{_RST}"]
     else:
         d.parent.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
             ["git", "clone", url, str(d)],
             capture_output=True, text=True
         )
-        lines = [f"Cloned   {platform}/{local_path}"]
         if result.returncode != 0:
-            lines.append(f"  Error: {result.stderr.strip()}")
+            lines = [f"{ERR} {label}: {result.stderr.strip().splitlines()[0]}"]
+        else:
+            lines = [f"{NEW} {label}: cloned"]
     _emit(lines)
 
 
@@ -98,20 +116,26 @@ def _pull_one(platform, local_path, d):
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        lines.append(f"{label}: error — {result.stderr.strip()}")
+        err = result.stderr.strip()
+        if "no tracking information" in err or "no upstream" in err.lower():
+            lines.append(f"{ERR} {label}: no upstream branch set")
+        else:
+            lines.append(f"{ERR} {label}: {err.splitlines()[0]}")
     elif result.stdout.strip() and result.stdout.strip() != "Already up to date.":
-        lines.append(f"{label}: {result.stdout.strip()}")
+        lines.append(f"{UPD} {label}:")
+        for ln in result.stdout.strip().splitlines():
+            lines.append(f"   {ln}")
     else:
-        lines.append(f"{label}: up to date")
+        lines.append(f"{OK} {_DIM}{label}{_RST}")
     if stashed:
         pop = subprocess.run(
             ["git", "-C", str(d), "stash", "pop"],
             capture_output=True, text=True
         )
         if pop.returncode != 0:
-            lines.append(f"  Warning: stash pop had conflicts")
+            lines.append(f"  {_Y}warning:{_RST} stash pop had conflicts in {label}")
         else:
-            lines.append(f"  Stash restored.")
+            lines.append(f"  stash restored")
     _emit(lines)
 
 
@@ -143,11 +167,11 @@ def cmd_status(config, base):
     for platform, local_path, output in sorted(results):
         if output:
             found_dirty = True
-            print(f"\n{platform}/{local_path}:")
+            print(f"\n{_Y}~{_RST} {platform}/{local_path}:")
             for line in output.splitlines():
                 print(f"  {line}")
     if not found_dirty:
-        print("All repos are clean.")
+        print(f"{OK} All repos are clean.")
 
 
 def cmd_pull(config, base):
