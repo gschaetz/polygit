@@ -1,7 +1,19 @@
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from .config import HOSTS
+
+_print_lock = threading.Lock()
+MAX_WORKERS = 8
+
+
+def _emit(lines):
+    """Print a block of lines atomically."""
+    with _print_lock:
+        for line in lines:
+            print(line)
 
 
 def walk(node, prefix):
@@ -41,70 +53,109 @@ def is_dirty(d):
 
 
 def _commit_and_push(d, label, msg):
-    print(f"Committing {label}...")
-    subprocess.run(["git", "-C", str(d), "add", "-A"])
-    subprocess.run(["git", "-C", str(d), "commit", "-m", msg])
+    lines = [f"Committing {label}..."]
+    subprocess.run(["git", "-C", str(d), "add", "-A"], capture_output=True)
+    subprocess.run(["git", "-C", str(d), "commit", "-m", msg], capture_output=True)
     result = subprocess.run(["git", "-C", str(d), "push"], capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"  Push failed: {result.stderr.strip()}")
+        lines.append(f"  Push failed: {result.stderr.strip()}")
     else:
-        print(f"  Pushed.")
+        lines.append(f"  Pushed.")
+    _emit(lines)
+
+
+def _sync_one(platform, local_path, remote_path, d):
+    url = f"{HOSTS[platform]}:{remote_path}.git"
+    if (d / ".git").exists():
+        result = subprocess.run(
+            ["git", "-C", str(d), "fetch", "--all", "-q"],
+            capture_output=True, text=True
+        )
+        lines = [f"Fetched  {platform}/{local_path}"]
+        if result.stderr.strip():
+            lines.append(f"  {result.stderr.strip()}")
+    else:
+        d.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            ["git", "clone", url, str(d)],
+            capture_output=True, text=True
+        )
+        lines = [f"Cloned   {platform}/{local_path}"]
+        if result.returncode != 0:
+            lines.append(f"  Error: {result.stderr.strip()}")
+    _emit(lines)
+
+
+def _pull_one(platform, local_path, d):
+    label = f"{platform}/{local_path}"
+    lines = []
+    stashed = False
+    if is_dirty(d):
+        subprocess.run(["git", "-C", str(d), "stash"], capture_output=True)
+        stashed = True
+    result = subprocess.run(
+        ["git", "-C", str(d), "pull", "--rebase"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        lines.append(f"{label}: error — {result.stderr.strip()}")
+    elif result.stdout.strip() and result.stdout.strip() != "Already up to date.":
+        lines.append(f"{label}: {result.stdout.strip()}")
+    else:
+        lines.append(f"{label}: up to date")
+    if stashed:
+        pop = subprocess.run(
+            ["git", "-C", str(d), "stash", "pop"],
+            capture_output=True, text=True
+        )
+        if pop.returncode != 0:
+            lines.append(f"  Warning: stash pop had conflicts")
+        else:
+            lines.append(f"  Stash restored.")
+    _emit(lines)
 
 
 def cmd_sync(config, base):
-    for platform, local_path, remote_path, d in each_repo(config, base):
-        url = f"{HOSTS[platform]}:{remote_path}.git"
-        if (d / ".git").exists():
-            print(f"Fetching {platform}/{local_path}...")
-            subprocess.run(["git", "-C", str(d), "fetch", "--all", "-q"])
-        else:
-            print(f"Cloning {platform}/{local_path}...")
-            d.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["git", "clone", url, str(d)])
+    repos = list(each_repo(config, base))
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = [pool.submit(_sync_one, p, lp, rp, d) for p, lp, rp, d in repos]
+        for f in as_completed(futures):
+            f.result()
 
 
 def cmd_status(config, base):
-    found_dirty = False
-    for platform, local_path, _, d in each_existing_repo(config, base):
+    results = []
+
+    def _check(platform, local_path, d):
         result = subprocess.run(
             ["git", "-C", str(d), "status", "--short"],
             capture_output=True, text=True
         )
-        if result.stdout.strip():
+        return platform, local_path, result.stdout.strip()
+
+    repos = list(each_existing_repo(config, base))
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {pool.submit(_check, p, lp, d): (p, lp) for p, lp, _, d in repos}
+        for f in as_completed(futures):
+            results.append(f.result())
+
+    found_dirty = False
+    for platform, local_path, output in sorted(results):
+        if output:
             found_dirty = True
             print(f"\n{platform}/{local_path}:")
-            for line in result.stdout.strip().splitlines():
+            for line in output.splitlines():
                 print(f"  {line}")
     if not found_dirty:
         print("All repos are clean.")
 
 
 def cmd_pull(config, base):
-    for platform, local_path, _, d in each_existing_repo(config, base):
-        label = f"{platform}/{local_path}"
-        stashed = False
-        if is_dirty(d):
-            print(f"Stashing {label}...")
-            subprocess.run(["git", "-C", str(d), "stash"], capture_output=True)
-            stashed = True
-        print(f"Pulling {label}...")
-        result = subprocess.run(
-            ["git", "-C", str(d), "pull", "--rebase"],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            print(f"  Error: {result.stderr.strip()}")
-        elif result.stdout.strip() and result.stdout.strip() != "Already up to date.":
-            print(f"  {result.stdout.strip()}")
-        if stashed:
-            pop = subprocess.run(
-                ["git", "-C", str(d), "stash", "pop"],
-                capture_output=True, text=True
-            )
-            if pop.returncode != 0:
-                print(f"  Warning: stash pop had conflicts in {label}")
-            else:
-                print(f"  Stash restored.")
+    repos = list(each_existing_repo(config, base))
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = [pool.submit(_pull_one, p, lp, d) for p, lp, _, d in repos]
+        for f in as_completed(futures):
+            f.result()
 
 
 def cmd_push(config, base, mode="interactive"):
@@ -120,8 +171,10 @@ def cmd_push(config, base, mode="interactive"):
 
     if mode == "wip":
         msg = f"WIP {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        for platform, local_path, d in dirty:
-            _commit_and_push(d, f"{platform}/{local_path}", msg)
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = [pool.submit(_commit_and_push, d, f"{p}/{lp}", msg) for p, lp, d in dirty]
+            for f in as_completed(futures):
+                f.result()
 
     elif mode == "all":
         print("Dirty repos:")
@@ -131,10 +184,12 @@ def cmd_push(config, base, mode="interactive"):
         if not msg:
             print("Aborted.")
             return
-        for platform, local_path, d in dirty:
-            _commit_and_push(d, f"{platform}/{local_path}", msg)
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = [pool.submit(_commit_and_push, d, f"{p}/{lp}", msg) for p, lp, d in dirty]
+            for f in as_completed(futures):
+                f.result()
 
-    else:  # interactive
+    else:  # interactive — must stay sequential for user input
         for platform, local_path, d in dirty:
             label = f"{platform}/{local_path}"
             status = subprocess.run(
