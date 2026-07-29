@@ -1,3 +1,8 @@
+include:
+  - project: "gary.schaetz/private/pipelines"
+    ref: main
+    file: 'templates/rules/rules.yml'
+
 stages:
   - test
   - build
@@ -12,6 +17,14 @@ test:
   tags:
     - docker
     - kubernetes
+  # Explicit rules instead of relying on GitLab's implicit default (only: [branches, tags]):
+  # that default happens to exclude merge_request_event already, but making it explicit here
+  # matches the pattern every other repo running on these self-hosted runners uses, rather
+  # than depending on undocumented default behavior for a job that runs arbitrary repo code.
+  rules:
+    - !reference [.job_rules, standard-rule]
+    - !reference [.job_rules, manual-rule]
+    - !reference [.job_rules, schedule-rule]
   script:
     - uv sync
     - uv run pytest
