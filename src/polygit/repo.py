@@ -151,7 +151,7 @@ def _pull_one(platform, local_path, d):
             lines.append(f"{WARN} {label}: no upstream branch set")
         else:
             lines.append(f"{ERR} {label}: {err.splitlines()[0]}")
-    elif result.stdout.strip() and result.stdout.strip() != "Already up to date.":
+    elif result.stdout.strip() and "up to date" not in result.stdout.lower():
         lines.append(f"{UPD} {label}:")
         for ln in result.stdout.strip().splitlines():
             lines.append(f"   {ln}")
