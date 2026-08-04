@@ -1,6 +1,8 @@
+import shutil
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +10,39 @@ from .config import HOSTS
 
 _print_lock = threading.Lock()
 MAX_WORKERS = 8
+
+# Errors seen when the SSH server drops a connection under concurrent load
+# rather than a real failure — safe to retry.
+_TRANSIENT_ERR_MARKERS = (
+    "kex_exchange_identification",
+    "Connection reset by peer",
+    "Connection timed out",
+    "Could not read from remote repository",
+    "early EOF",
+    "The remote end hung up unexpectedly",
+)
+
+
+def _is_transient(stderr):
+    return any(marker in stderr for marker in _TRANSIENT_ERR_MARKERS)
+
+
+def _run_git(args, retries=2, delay=1.5, cleanup=None):
+    """Run a git subprocess, retrying on transient SSH/network errors.
+
+    `cleanup`, if given, runs before each retry (e.g. to remove a partial
+    clone directory left behind by the failed attempt).
+    """
+    for attempt in range(retries + 1):
+        result = subprocess.run(args, capture_output=True, text=True)
+        if result.returncode == 0 or not _is_transient(result.stderr):
+            return result
+        if attempt < retries:
+            if cleanup:
+                cleanup()
+            time.sleep(delay * (attempt + 1))
+    return result
+
 
 _USE_COLOR = sys.stdout.isatty()
 
@@ -72,7 +107,7 @@ def _commit_and_push(d, label, msg):
     lines = [f"  Committing {label}..."]
     subprocess.run(["git", "-C", str(d), "add", "-A"], capture_output=True)
     subprocess.run(["git", "-C", str(d), "commit", "-m", msg], capture_output=True)
-    result = subprocess.run(["git", "-C", str(d), "push"], capture_output=True, text=True)
+    result = _run_git(["git", "-C", str(d), "push"])
     if result.returncode != 0:
         lines.append(f"{ERR} {label}: push failed — {result.stderr.strip().splitlines()[0]}")
     else:
@@ -84,19 +119,16 @@ def _sync_one(platform, local_path, remote_path, d):
     url = f"{HOSTS[platform]}:{remote_path}.git"
     label = f"{platform}/{local_path}"
     if (d / ".git").exists():
-        result = subprocess.run(
-            ["git", "-C", str(d), "fetch", "--all", "-q"],
-            capture_output=True, text=True
-        )
+        result = _run_git(["git", "-C", str(d), "fetch", "--all", "-q"])
         if result.returncode != 0:
             lines = [f"{ERR} {label}: {result.stderr.strip().splitlines()[0]}"]
         else:
             lines = [f"{OK} {_DIM}{label}{_RST}"]
     else:
         d.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
+        result = _run_git(
             ["git", "clone", url, str(d)],
-            capture_output=True, text=True
+            cleanup=lambda: shutil.rmtree(d, ignore_errors=True),
         )
         if result.returncode != 0:
             lines = [f"{ERR} {label}: {result.stderr.strip().splitlines()[0]}"]
@@ -112,10 +144,7 @@ def _pull_one(platform, local_path, d):
     if is_dirty(d):
         subprocess.run(["git", "-C", str(d), "stash"], capture_output=True)
         stashed = True
-    result = subprocess.run(
-        ["git", "-C", str(d), "pull", "--rebase"],
-        capture_output=True, text=True
-    )
+    result = _run_git(["git", "-C", str(d), "pull", "--rebase"])
     if result.returncode != 0:
         err = result.stderr.strip()
         if "no tracking information" in err or "no upstream" in err.lower():
