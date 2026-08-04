@@ -3,7 +3,7 @@
 Manage multiple git repos from a single `.pgit` config file.
 
 ```bash
-pip install polygit
+uv tool install polygit
 ```
 
 ## Usage
