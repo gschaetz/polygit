@@ -40,28 +40,24 @@ def del_nested(d, keys):
 
 
 def _add_to_config(config, fs_platform, local_path, remote_url):
-    """Insert a repo entry into the config data structure."""
+    """Insert a repo entry into the config data structure.
+
+    Always nests under the *local* namespace (the repo's actual directory
+    location), with a `{remote: ...}` override when the remote path differs
+    — e.g. a repo cloned under a local namespace unrelated to its remote
+    org/namespace.
+    """
     local_parts = local_path.split("/")
     local_name  = local_parts[-1]
+    local_ns    = "/".join(local_parts[:-1])
     _, remote_path = parse_remote_url(remote_url)
     platform_data = config.setdefault(fs_platform, {})
+    ns_data = platform_data.setdefault(local_ns, {})
 
-    if remote_path:
-        r_parts = remote_path.split("/")
-        r_name  = r_parts[-1]
-        r_ns    = "/".join(r_parts[:-1])
-        ns_data = platform_data.setdefault(r_ns, {})
-        if local_path == f"{r_ns}/{r_name}":
-            ns_data[r_name] = None
-        else:
-            sub  = local_path[len(r_ns)+1:] if local_path.startswith(r_ns + "/") else local_name
-            node = ns_data
-            for part in sub.split("/")[:-1]:
-                node = node.setdefault(part, {})
-            node[sub.split("/")[-1]] = {"remote": remote_path}
+    if remote_path and remote_path != local_path:
+        ns_data[local_name] = {"remote": remote_path}
     else:
-        local_ns = "/".join(local_parts[:-1])
-        platform_data.setdefault(local_ns, {})[local_name] = None
+        ns_data[local_name] = None
 
 
 def cmd_repos(config, base, config_path):

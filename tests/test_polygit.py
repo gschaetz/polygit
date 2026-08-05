@@ -2,7 +2,7 @@ import tempfile
 import pytest
 from pathlib import Path
 from polygit.config import find_config, load_config, write_config
-from polygit.repos import parse_remote_url, del_nested
+from polygit.repos import parse_remote_url, del_nested, _add_to_config
 from polygit.repo import walk
 
 
@@ -57,6 +57,26 @@ def test_del_nested_preserves_siblings():
     d = {"a": {"b": None, "c": None}}
     del_nested(d, ["a", "b"])
     assert d == {"a": {"c": None}}
+
+
+# ── _add_to_config ──────────────────────────────────────────────────────────
+
+def test_add_to_config_plain():
+    config = {}
+    _add_to_config(config, "github", "gschaetz/mousehat", "git@github.com:gschaetz/mousehat.git")
+    assert config == {"github": {"gschaetz": {"mousehat": None}}}
+
+def test_add_to_config_cross_namespace_override():
+    # Local dir lives under a namespace unrelated to the remote org — must
+    # nest under the local namespace, not silently fall back to the remote's.
+    config = {}
+    _add_to_config(config, "github", "community/modelrelay", "git@github.com:ellipticmarketing/modelrelay.git")
+    assert config == {"github": {"community": {"modelrelay": {"remote": "ellipticmarketing/modelrelay"}}}}
+
+def test_add_to_config_no_remote():
+    config = {}
+    _add_to_config(config, "github", "gschaetz/scratch", None)
+    assert config == {"github": {"gschaetz": {"scratch": None}}}
 
 
 # ── find_config / write_config / load_config ──────────────────────────────────
