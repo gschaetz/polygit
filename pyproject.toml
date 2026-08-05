@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://gitlab.com/gary.schaetz/public/polygit"
+Repository = "https://github.com/gschaetz/polygit"
 
 [project.scripts]
 pgit = "polygit.cli:main"

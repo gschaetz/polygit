@@ -8,8 +8,8 @@ manages multiple git repos (across GitHub/GitLab, multiple orgs/namespaces) from
 very `~/development/gitlab` tree these AGENTS.md files live in.
 
 Standard `src`-layout Python package (`pyproject.toml`, `uv.lock` — uses `uv`, not
-pip/poetry, for dev dependency management). `.gitlab-ci.yml` presumably builds/publishes on
-tag, mirroring `gitlab-ci-generator`'s pattern.
+pip/poetry, for dev dependency management). Hosted on GitHub (moved from GitLab); CI is
+`.github/workflows/ci.yml` — test on every push/PR, build+publish to PyPI on `v*.*.*` tags.
 
 Replaced an older `sync.sh` script (see recent commit history) — if you find references to
 `sync.sh` elsewhere in the user's dotfiles/bootstrap scripts, they're stale.
