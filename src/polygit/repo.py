@@ -24,6 +24,10 @@ _TRANSIENT_ERR_MARKERS = (
 )
 
 
+def _pool(jobs=None):
+    return ThreadPoolExecutor(max_workers=jobs or MAX_WORKERS)
+
+
 def _is_transient(stderr):
     return any(marker in stderr for marker in _TRANSIENT_ERR_MARKERS)
 
@@ -193,15 +197,15 @@ def _pull_one(platform, local_path, d, dry_run=False):
     _emit(lines)
 
 
-def cmd_sync(config, base):
+def cmd_sync(config, base, jobs=None):
     repos = list(each_repo(config, base))
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+    with _pool(jobs) as pool:
         futures = [pool.submit(_sync_one, p, lp, rp, d) for p, lp, rp, d in repos]
         for f in as_completed(futures):
             f.result()
 
 
-def cmd_status(config, base, json_output=False, only=None):
+def cmd_status(config, base, json_output=False, only=None, jobs=None):
     results = []
 
     def _check(platform, local_path, d):
@@ -212,7 +216,7 @@ def cmd_status(config, base, json_output=False, only=None):
         return platform, local_path, result.stdout.strip()
 
     repos = list(each_existing_repo(config, base, only=only))
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+    with _pool(jobs) as pool:
         futures = {pool.submit(_check, p, lp, d): (p, lp) for p, lp, _, d in repos}
         for f in as_completed(futures):
             results.append(f.result())
@@ -237,15 +241,15 @@ def cmd_status(config, base, json_output=False, only=None):
         print(f"{OK} All repos are clean.")
 
 
-def cmd_pull(config, base, dry_run=False, only=None):
+def cmd_pull(config, base, dry_run=False, only=None, jobs=None):
     repos = list(each_existing_repo(config, base, only=only))
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+    with _pool(jobs) as pool:
         futures = [pool.submit(_pull_one, p, lp, d, dry_run) for p, lp, _, d in repos]
         for f in as_completed(futures):
             f.result()
 
 
-def cmd_push(config, base, mode="interactive", dry_run=False, only=None):
+def cmd_push(config, base, mode="interactive", dry_run=False, only=None, jobs=None):
     dirty = [
         (platform, local_path, d)
         for platform, local_path, _, d in each_existing_repo(config, base, only=only)
@@ -264,7 +268,7 @@ def cmd_push(config, base, mode="interactive", dry_run=False, only=None):
 
     if mode == "wip":
         msg = f"WIP {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        with _pool(jobs) as pool:
             futures = [pool.submit(_commit_and_push, d, f"{p}/{lp}", msg) for p, lp, d in dirty]
             for f in as_completed(futures):
                 f.result()
@@ -277,7 +281,7 @@ def cmd_push(config, base, mode="interactive", dry_run=False, only=None):
         if not msg:
             print("Aborted.")
             return
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        with _pool(jobs) as pool:
             futures = [pool.submit(_commit_and_push, d, f"{p}/{lp}", msg) for p, lp, d in dirty]
             for f in as_completed(futures):
                 f.result()

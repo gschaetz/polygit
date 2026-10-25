@@ -16,6 +16,18 @@ pgit push      # interactively commit and push dirty repos
 pgit repos     # discover drift between .pgit and the filesystem
 ```
 
+`status`, `pull`, `push` *and* `sync` accept `--jobs N` to control how many
+repositories are processed in parallel. The default (when omitted) is 8.
+
+```bash
+pgit sync --jobs 4
+pgit status --jobs 1
+pgit pull   --only github --dry-run --jobs 4
+```
+
+`N` must be a positive integer; otherwise the command prints a clear error and
+exits with status 2.
+
 `status`, `pull` and `push` accept `--only <platform>` to operate on a single platform
 (e.g. `github`) instead of all of them:
 

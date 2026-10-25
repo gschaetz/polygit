@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 from polygit.config import find_config, load_config, write_config
 from polygit.repos import parse_remote_url, del_nested, _add_to_config
-from polygit.repo import walk, _pull_one, cmd_push, cmd_status, cmd_pull
+from polygit.repo import walk, _pull_one, cmd_push, cmd_status, cmd_pull, cmd_sync
 
 
 # ── parse_remote_url ──────────────────────────────────────────────────────────
@@ -196,6 +196,96 @@ def test_push_dry_run_lists_dirty_without_committing(capsys, tmp_path):
     log = subprocess.run(["git", "-C", str(d), "log", "--oneline"],
                          capture_output=True, text=True).stdout
     assert len(log.splitlines()) == 1
+
+
+# ── --jobs parallelism ───────────────────────────────────────────────────────
+
+def _run_main(monkeypatch, *argv):
+    import sys
+    from polygit.cli import main
+    monkeypatch.setattr(sys, "argv", ["pgit", *argv])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    return exc.value.code
+
+
+@pytest.mark.parametrize("value, message", [
+    ("0", "positive integer"),
+    ("-3", "positive integer"),
+    ("lots", "invalid int value"),
+])
+@pytest.mark.parametrize("command", ["sync", "status", "pull", "push"])
+def test_jobs_invalid_exits_2_before_config_lookup(capsys, tmp_path, monkeypatch,
+                                                   command, value, message):
+    # No .pgit here: argparse must reject the value before the config is read.
+    monkeypatch.chdir(tmp_path)
+    assert _run_main(monkeypatch, command, "--jobs", value) == 2
+    err = capsys.readouterr().err
+    assert "--jobs" in err and message in err
+
+
+@pytest.fixture
+def pool_sizes(monkeypatch):
+    """Record the max_workers of every ThreadPoolExecutor the commands create."""
+    from concurrent.futures import ThreadPoolExecutor
+    sizes = []
+
+    class Spy(ThreadPoolExecutor):
+        def __init__(self, max_workers=None, *a, **kw):
+            sizes.append(max_workers)
+            super().__init__(max_workers, *a, **kw)
+
+    monkeypatch.setattr("polygit.repo.ThreadPoolExecutor", Spy)
+    return sizes
+
+
+def _dirty_clone(tmp_path):
+    d = _make_clone(tmp_path)
+    (d / "x.txt").write_text("x")
+    return d
+
+
+def test_sync_uses_jobs(pool_sizes, tmp_path):
+    _make_clone(tmp_path)
+    cmd_sync({"github": {"r": None}}, tmp_path, jobs=3)
+    assert pool_sizes == [3]
+
+
+def test_status_uses_jobs(pool_sizes, tmp_path):
+    _dirty_clone(tmp_path)
+    cmd_status({"github": {"r": None}}, tmp_path, jobs=4)
+    assert pool_sizes == [4]
+
+
+def test_pull_uses_jobs(pool_sizes, tmp_path):
+    _make_clone(tmp_path)
+    cmd_pull({"github": {"r": None}}, tmp_path, dry_run=True, jobs=2)
+    assert pool_sizes == [2]
+
+
+def test_push_wip_uses_jobs(pool_sizes, tmp_path):
+    _dirty_clone(tmp_path)
+    cmd_push({"github": {"r": None}}, tmp_path, mode="wip", jobs=5)
+    assert pool_sizes == [5]
+
+
+def test_push_all_uses_jobs(pool_sizes, tmp_path, monkeypatch):
+    _dirty_clone(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _: "msg")
+    cmd_push({"github": {"r": None}}, tmp_path, mode="all", jobs=6)
+    assert pool_sizes == [6]
+
+
+@pytest.mark.parametrize("run", [
+    lambda tp: cmd_sync({"github": {"r": None}}, tp),
+    lambda tp: cmd_status({"github": {"r": None}}, tp),
+    lambda tp: cmd_pull({"github": {"r": None}}, tp, dry_run=True),
+])
+def test_default_pool_size_is_max_workers(pool_sizes, tmp_path, run):
+    from polygit.repo import MAX_WORKERS
+    _make_clone(tmp_path)
+    run(tmp_path)
+    assert pool_sizes == [MAX_WORKERS]
 
 
 # ── status --json ────────────────────────────────────────────────────────────
