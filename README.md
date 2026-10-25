@@ -16,6 +16,17 @@ pgit push      # interactively commit and push dirty repos
 pgit repos     # discover drift between .pgit and the filesystem
 ```
 
+`status`, `pull` and `push` accept `--only <platform>` to operate on a single platform
+(e.g. `github`) instead of all of them:
+
+```bash
+pgit status --only gitlab
+pgit pull   --only github --dry-run
+pgit push   --only gitlab --all
+```
+
+Passing an unknown platform prints an error to stderr and exits 1.
+
 ## Configuration
 
 Create a `.pgit` file in the root directory that contains your repos:

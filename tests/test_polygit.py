@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 from polygit.config import find_config, load_config, write_config
 from polygit.repos import parse_remote_url, del_nested, _add_to_config
-from polygit.repo import walk, _pull_one, cmd_push, cmd_status
+from polygit.repo import walk, _pull_one, cmd_push, cmd_status, cmd_pull
 
 
 # ── parse_remote_url ──────────────────────────────────────────────────────────
@@ -249,3 +249,89 @@ def test_status_default_clean_message(capsys, tmp_path):
     _make_clone(tmp_path)
     cmd_status({"github": {"r": None}}, tmp_path)
     assert "All repos are clean." in capsys.readouterr().out
+
+
+# ── --only platform filter ───────────────────────────────────────────────────
+
+def _gitlab_clone(tmp_path, name="gl", commit=True):
+    d = tmp_path / "gitlab" / name
+    d.parent.mkdir()
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "origin.git"), str(d)],
+                   check=True, capture_output=True)
+    if commit:
+        _commit(d, "seed")
+        _git(d, "push", "-q", "origin", "HEAD:main")
+    return d
+
+
+def test_status_only_limits_to_platform(capsys, tmp_path):
+    github = _make_clone(tmp_path)
+    (github / "x.txt").write_text("x")
+    _gitlab_clone(tmp_path)
+    (tmp_path / "gitlab" / "gl" / "y.txt").write_text("y")
+
+    cmd_status({"github": {"r": None}, "gitlab": {"gl": None}}, tmp_path, only="github")
+
+    out = capsys.readouterr().out
+    assert "github/r" in out
+    assert "gitlab/gl" not in out
+
+
+def test_status_only_json(capsys, tmp_path):
+    github = _make_clone(tmp_path)
+    (github / "x.txt").write_text("x")
+    _gitlab_clone(tmp_path)
+    (tmp_path / "gitlab" / "gl" / "y.txt").write_text("y")
+
+    cmd_status({"github": {"r": None}, "gitlab": {"gl": None}}, tmp_path,
+               json_output=True, only="github")
+
+    assert json.loads(capsys.readouterr().out) == [
+        {"platform": "github", "path": "r", "changed_files": 1}
+    ]
+
+
+def test_pull_only_limits_to_platform(capsys, tmp_path):
+    _make_clone(tmp_path, ahead=2)
+    _gitlab_clone(tmp_path)
+    _commit(tmp_path / "gitlab" / "gl", "ahead")
+    _git(tmp_path / "gitlab" / "gl", "push", "-q", "origin", "HEAD:main")
+
+    cmd_pull({"github": {"r": None}, "gitlab": {"gl": None}}, tmp_path,
+             dry_run=True, only="github")
+
+    out = capsys.readouterr().out
+    assert "github/r" in out
+    assert "gitlab/gl" not in out
+
+
+def test_push_only_limits_to_platform(capsys, tmp_path):
+    github = _make_clone(tmp_path)
+    (github / "g.txt").write_text("x")
+    _gitlab_clone(tmp_path)
+    (tmp_path / "gitlab" / "gl" / "l.txt").write_text("x")
+
+    cmd_push({"github": {"r": None}, "gitlab": {"gl": None}}, tmp_path,
+             dry_run=True, only="github")
+
+    out = capsys.readouterr().out
+    assert "github/r" in out
+    assert "gitlab/gl" not in out
+
+
+def test_status_unknown_platform_errors(capsys, tmp_path, monkeypatch):
+    import sys
+    from polygit.cli import main
+
+    _make_clone(tmp_path)
+    (tmp_path / ".pgit").write_text("github:\n  r:\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["pgit", "status", "--only", "bitbucket"])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "bitbucket" in err
+    assert "github" in err

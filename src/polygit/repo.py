@@ -89,9 +89,15 @@ def each_repo(config, base):
                 yield platform, local_path, remote_path, base / platform / local_path
 
 
-def each_existing_repo(config, base):
-    """Yield only repos that are already cloned locally."""
+def each_existing_repo(config, base, only=None):
+    """Yield only repos that are already cloned locally.
+
+    If *only* is set, only repos under that platform are yielded. The helper
+    is used by :func:`cmd_status`, :func:`cmd_pull` and :func:`cmd_push`.
+    """
     for platform, local_path, remote_path, d in each_repo(config, base):
+        if only is not None and platform != only:
+            continue
         if (d / ".git").exists():
             yield platform, local_path, remote_path, d
 
@@ -195,7 +201,7 @@ def cmd_sync(config, base):
             f.result()
 
 
-def cmd_status(config, base, json_output=False):
+def cmd_status(config, base, json_output=False, only=None):
     results = []
 
     def _check(platform, local_path, d):
@@ -205,7 +211,7 @@ def cmd_status(config, base, json_output=False):
         )
         return platform, local_path, result.stdout.strip()
 
-    repos = list(each_existing_repo(config, base))
+    repos = list(each_existing_repo(config, base, only=only))
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {pool.submit(_check, p, lp, d): (p, lp) for p, lp, _, d in repos}
         for f in as_completed(futures):
@@ -231,18 +237,18 @@ def cmd_status(config, base, json_output=False):
         print(f"{OK} All repos are clean.")
 
 
-def cmd_pull(config, base, dry_run=False):
-    repos = list(each_existing_repo(config, base))
+def cmd_pull(config, base, dry_run=False, only=None):
+    repos = list(each_existing_repo(config, base, only=only))
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = [pool.submit(_pull_one, p, lp, d, dry_run) for p, lp, _, d in repos]
         for f in as_completed(futures):
             f.result()
 
 
-def cmd_push(config, base, mode="interactive", dry_run=False):
+def cmd_push(config, base, mode="interactive", dry_run=False, only=None):
     dirty = [
         (platform, local_path, d)
-        for platform, local_path, _, d in each_existing_repo(config, base)
+        for platform, local_path, _, d in each_existing_repo(config, base, only=only)
         if is_dirty(d)
     ]
 
