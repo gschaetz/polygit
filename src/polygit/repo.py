@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 import sys
@@ -194,7 +195,7 @@ def cmd_sync(config, base):
             f.result()
 
 
-def cmd_status(config, base):
+def cmd_status(config, base, json_output=False):
     results = []
 
     def _check(platform, local_path, d):
@@ -209,6 +210,15 @@ def cmd_status(config, base):
         futures = {pool.submit(_check, p, lp, d): (p, lp) for p, lp, _, d in repos}
         for f in as_completed(futures):
             results.append(f.result())
+
+    if json_output:
+        entries = [
+            {"platform": platform, "path": local_path, "changed_files": len(output.splitlines())}
+            for platform, local_path, output in sorted(results)
+            if output
+        ]
+        print(json.dumps(entries))
+        return
 
     found_dirty = False
     for platform, local_path, output in sorted(results):

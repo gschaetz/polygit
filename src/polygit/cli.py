@@ -13,7 +13,9 @@ def main():
     sub = parser.add_subparsers(dest="command", metavar="command")
 
     sub.add_parser("sync",   help="Clone missing repos and fetch all")
-    sub.add_parser("status", help="Show repos with uncommitted changes")
+    status_p = sub.add_parser("status", help="Show repos with uncommitted changes")
+    status_p.add_argument("--json", action="store_true",
+                          help="Print dirty repos as a JSON list")
     pull_p = sub.add_parser("pull",   help="Pull all repos, auto-stashing local changes")
     pull_p.add_argument("--dry-run", action="store_true",
                         help="Show ahead/behind vs. last-fetched upstream; changes nothing")
@@ -49,7 +51,7 @@ def main():
 
     commands = {
         "sync":   lambda: cmd_sync(config, base),
-        "status": lambda: cmd_status(config, base),
+        "status": lambda: cmd_status(config, base, json_output=args.json),
         "pull":   lambda: cmd_pull(config, base, dry_run=args.dry_run),
         "push":   lambda: cmd_push(config, base, mode=args.push_mode, dry_run=args.dry_run),
         "repos":  lambda: cmd_repos(config, base, config_path),

@@ -1,10 +1,11 @@
+import json
 import subprocess
 import tempfile
 import pytest
 from pathlib import Path
 from polygit.config import find_config, load_config, write_config
 from polygit.repos import parse_remote_url, del_nested, _add_to_config
-from polygit.repo import walk, _pull_one, cmd_push
+from polygit.repo import walk, _pull_one, cmd_push, cmd_status
 
 
 # ── parse_remote_url ──────────────────────────────────────────────────────────
@@ -195,3 +196,56 @@ def test_push_dry_run_lists_dirty_without_committing(capsys, tmp_path):
     log = subprocess.run(["git", "-C", str(d), "log", "--oneline"],
                          capture_output=True, text=True).stdout
     assert len(log.splitlines()) == 1
+
+
+# ── status --json ────────────────────────────────────────────────────────────
+
+def test_status_json_lists_dirty_repos(capsys, tmp_path):
+    d = _make_clone(tmp_path)
+    (d / "init").write_text("edited")
+    (d / "a.txt").write_text("a")
+    (d / "b.txt").write_text("b")
+
+    cmd_status({"github": {"r": None}}, tmp_path, json_output=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == [{"platform": "github", "path": "r", "changed_files": 3}]
+
+
+def test_status_json_empty_when_clean(capsys, tmp_path):
+    _make_clone(tmp_path)
+    cmd_status({"github": {"r": None}}, tmp_path, json_output=True)
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_status_json_omits_clean_repos(capsys, tmp_path):
+    _make_clone(tmp_path)
+    dirty = tmp_path / "github" / "other"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "origin.git"), str(dirty)],
+                   check=True, capture_output=True)
+    (dirty / "x.txt").write_text("x")
+
+    cmd_status({"github": {"r": None, "other": None}}, tmp_path, json_output=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == [{"platform": "github", "path": "other", "changed_files": 1}]
+
+
+def test_status_default_output_unchanged(capsys, tmp_path):
+    d = _make_clone(tmp_path)
+    (d / "dirty.txt").write_text("x")
+
+    cmd_status({"github": {"r": None}}, tmp_path)
+    out = capsys.readouterr().out
+
+    assert "github/r" in out
+    assert "dirty.txt" in out
+    assert out.strip()[0] != "["
+    with pytest.raises(ValueError):
+        json.loads(out)
+
+
+def test_status_default_clean_message(capsys, tmp_path):
+    _make_clone(tmp_path)
+    cmd_status({"github": {"r": None}}, tmp_path)
+    assert "All repos are clean." in capsys.readouterr().out

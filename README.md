@@ -63,6 +63,20 @@ pgit push --dry-run      # list dirty repos that would be committed and pushed
 
 `pull --dry-run` compares against the last fetched state of each upstream, so run `pgit sync` first for current numbers.
 
+## status --json
+
+```bash
+pgit status --json   # machine-readable list of dirty repos
+```
+
+Prints a single JSON array on stdout and nothing else:
+
+```json
+[{"platform": "github", "path": "gschaetz/mousehat", "changed_files": 2}]
+```
+
+`changed_files` is the number of entries in `git status --short`. Clean repos are omitted, so the array is empty when there is nothing to commit.
+
 ## repos — drift detection
 
 `pgit repos` compares what's actually on disk against your `.pgit` config and reports:
