@@ -137,8 +137,25 @@ def _sync_one(platform, local_path, remote_path, d):
     _emit(lines)
 
 
-def _pull_one(platform, local_path, d):
+def _pull_dry_run(label, d):
+    """Report ahead/behind vs. upstream without touching the repo."""
+    counts = subprocess.run(
+        ["git", "-C", str(d), "rev-list", "--left-right", "--count", "HEAD...@{u}"],
+        capture_output=True, text=True,
+    )
+    if counts.returncode != 0:
+        return [f"{WARN} {label}: no upstream branch set"]
+    ahead, behind = counts.stdout.split()
+    if ahead == "0" and behind == "0":
+        return [f"{OK} {_DIM}{label}{_RST}"]
+    return [f"{UPD} {label}: {ahead} ahead, {behind} behind"]
+
+
+def _pull_one(platform, local_path, d, dry_run=False):
     label = f"{platform}/{local_path}"
+    if dry_run:
+        _emit(_pull_dry_run(label, d))
+        return
     lines = []
     stashed = False
     if is_dirty(d):
@@ -204,15 +221,15 @@ def cmd_status(config, base):
         print(f"{OK} All repos are clean.")
 
 
-def cmd_pull(config, base):
+def cmd_pull(config, base, dry_run=False):
     repos = list(each_existing_repo(config, base))
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = [pool.submit(_pull_one, p, lp, d) for p, lp, _, d in repos]
+        futures = [pool.submit(_pull_one, p, lp, d, dry_run) for p, lp, _, d in repos]
         for f in as_completed(futures):
             f.result()
 
 
-def cmd_push(config, base, mode="interactive"):
+def cmd_push(config, base, mode="interactive", dry_run=False):
     dirty = [
         (platform, local_path, d)
         for platform, local_path, _, d in each_existing_repo(config, base)
@@ -221,6 +238,12 @@ def cmd_push(config, base, mode="interactive"):
 
     if not dirty:
         print("No dirty repos to commit.")
+        return
+
+    if dry_run:
+        print("Would commit and push the following dirty repos:")
+        for platform, local_path, _ in dirty:
+            print(f"  {platform}/{local_path}")
         return
 
     if mode == "wip":

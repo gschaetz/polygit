@@ -54,6 +54,15 @@ pgit push --all          # one message for all dirty repos
 pgit push --wip          # auto-commit with "WIP <timestamp>"
 ```
 
+## dry run
+
+```bash
+pgit pull --dry-run      # show ahead/behind per repo; changes nothing
+pgit push --dry-run      # list dirty repos that would be committed and pushed
+```
+
+`pull --dry-run` compares against the last fetched state of each upstream, so run `pgit sync` first for current numbers.
+
 ## repos — drift detection
 
 `pgit repos` compares what's actually on disk against your `.pgit` config and reports:

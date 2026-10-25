@@ -14,7 +14,9 @@ def main():
 
     sub.add_parser("sync",   help="Clone missing repos and fetch all")
     sub.add_parser("status", help="Show repos with uncommitted changes")
-    sub.add_parser("pull",   help="Pull all repos, auto-stashing local changes")
+    pull_p = sub.add_parser("pull",   help="Pull all repos, auto-stashing local changes")
+    pull_p.add_argument("--dry-run", action="store_true",
+                        help="Show ahead/behind vs. last-fetched upstream; changes nothing")
 
     push_p = sub.add_parser("push", help="Commit and push dirty repos")
     mode_g = push_p.add_mutually_exclusive_group()
@@ -25,6 +27,8 @@ def main():
     mode_g.add_argument("--wip", dest="push_mode", action="store_const",
                         const="wip", help='Auto-commit with "WIP <timestamp>"')
     push_p.set_defaults(push_mode="interactive")
+    push_p.add_argument("--dry-run", action="store_true",
+                        help="Show the commit/push plan without committing or pushing")
 
     sub.add_parser("repos", help="Discover drift between .pgit and the filesystem")
 
@@ -46,8 +50,8 @@ def main():
     commands = {
         "sync":   lambda: cmd_sync(config, base),
         "status": lambda: cmd_status(config, base),
-        "pull":   lambda: cmd_pull(config, base),
-        "push":   lambda: cmd_push(config, base, mode=args.push_mode),
+        "pull":   lambda: cmd_pull(config, base, dry_run=args.dry_run),
+        "push":   lambda: cmd_push(config, base, mode=args.push_mode, dry_run=args.dry_run),
         "repos":  lambda: cmd_repos(config, base, config_path),
     }
     commands[args.command]()
