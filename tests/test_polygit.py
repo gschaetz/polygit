@@ -288,6 +288,21 @@ def test_default_pool_size_is_max_workers(pool_sizes, tmp_path, run):
     assert pool_sizes == [MAX_WORKERS]
 
 
+def test_push_wip_default_pool_size_is_max_workers(pool_sizes, tmp_path):
+    from polygit.repo import MAX_WORKERS
+    _dirty_clone(tmp_path)
+    cmd_push({"github": {"r": None}}, tmp_path, mode="wip")
+    assert pool_sizes == [MAX_WORKERS]
+
+
+def test_push_interactive_creates_no_pool(pool_sizes, tmp_path, monkeypatch):
+    # Interactive mode prompts per repo, so it must stay sequential even with --jobs.
+    _dirty_clone(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _: "")
+    cmd_push({"github": {"r": None}}, tmp_path, mode="interactive", jobs=4)
+    assert pool_sizes == []
+
+
 # ── status --json ────────────────────────────────────────────────────────────
 
 def test_status_json_lists_dirty_repos(capsys, tmp_path):
