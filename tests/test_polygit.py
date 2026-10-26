@@ -198,6 +198,34 @@ def test_push_dry_run_lists_dirty_without_committing(capsys, tmp_path):
     assert len(log.splitlines()) == 1
 
 
+def test_push_commit_failed_reports_error(capsys, tmp_path):
+    d = _make_clone(tmp_path)
+    (d / "dirty.txt").write_text("x")
+    hook = d / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho 'pre-commit hook failed'\nexit 1\n")
+    hook.chmod(0o755)
+
+    from polygit.repo import _commit_and_push
+    _commit_and_push(d, "github/r", "WIP test")
+
+    out = capsys.readouterr().out
+    assert "commit failed" in out
+    assert "pushed" not in out
+
+
+def test_push_nothing_to_commit_reports_error(capsys, tmp_path):
+    """A repo with no staged changes must not crash and must not push."""
+    d = _make_clone(tmp_path)
+    # No changes staged — git commit will refuse.
+
+    from polygit.repo import _commit_and_push
+    _commit_and_push(d, "github/r", "WIP test")
+
+    out = capsys.readouterr().out
+    assert "commit failed" in out
+    assert "pushed" not in out
+
+
 # ── --jobs parallelism ───────────────────────────────────────────────────────
 
 def _run_main(monkeypatch, *argv):

@@ -116,8 +116,27 @@ def is_dirty(d):
 
 def _commit_and_push(d, label, msg):
     lines = [f"  Committing {label}..."]
-    subprocess.run(["git", "-C", str(d), "add", "-A"], capture_output=True)
-    subprocess.run(["git", "-C", str(d), "commit", "-m", msg], capture_output=True)
+    add_result = subprocess.run(
+        ["git", "-C", str(d), "add", "-A"],
+        capture_output=True, text=True
+    )
+    if add_result.returncode != 0:
+        out = add_result.stderr.strip() or add_result.stdout.strip()
+        lines.append(f"{ERR} {label}: add failed — {out.splitlines()[-1] if out else 'unknown error'}")
+        _emit(lines)
+        return
+    commit_result = subprocess.run(
+        ["git", "-C", str(d), "commit", "-m", msg],
+        capture_output=True, text=True
+    )
+    if commit_result.returncode != 0:
+        # Error may be on stdout (e.g. "nothing to commit") or stderr (pre-commit hook).
+        # Take the last non-empty line which usually has the actionable message.
+        out = commit_result.stderr.strip() or commit_result.stdout.strip()
+        msg_line = out.splitlines()[-1] if out else "unknown error"
+        lines.append(f"{ERR} {label}: commit failed — {msg_line}")
+        _emit(lines)
+        return
     result = _run_git(["git", "-C", str(d), "push"])
     if result.returncode != 0:
         lines.append(f"{ERR} {label}: push failed — {result.stderr.strip().splitlines()[0]}")
