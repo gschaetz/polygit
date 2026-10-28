@@ -1,0 +1,12 @@
+schema: spec-driven
+
+context: |
+  Published Python package (`pgit` CLI, PyPI name `polygit`) that manages many git repos
+  across GitHub/GitLab from one `.pgit` config found by walking up from the cwd.
+  Pure stdlib plus git subprocesses; per-repo work runs in a thread pool (--jobs, default 8).
+  Machine-readable output (`--json`) must be the only thing on stdout.
+  Git state is read from local refs unless a command says otherwise (no implicit fetch).
+  Tags `v*.*.*` publish to PyPI, so never create or push a release tag unless asked.
+rules:
+  tasks:
+    - Include tests in tests/test_polygit.py for every new scenario, and update README.md for user-visible changes

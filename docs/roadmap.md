@@ -1,6 +1,8 @@
 # Roadmap
 
-Ideas for future enhancements to `pgit`. Work through these one by one.
+Ideas for future enhancements to `pgit`. Work through these one by one; each becomes an OpenSpec change (`/opsx:propose`) before any code.
+
+Shipped: `pgit branches` (see `openspec/specs/branches/`).
 
 ## Hosts & remotes
 - Support additional hosts (Bitbucket, Azure DevOps, generic SSH) beyond GitHub/GitLab.
