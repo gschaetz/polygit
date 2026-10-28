@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 from polygit.config import find_config, load_config, write_config
 from polygit.repos import parse_remote_url, del_nested, _add_to_config
-from polygit.repo import walk, _pull_one, cmd_push, cmd_status, cmd_pull, cmd_sync
+from polygit.repo import walk, _pull_one, cmd_push, cmd_status, cmd_pull, cmd_sync, cmd_branches
 
 
 # ── parse_remote_url ──────────────────────────────────────────────────────────
@@ -468,3 +468,180 @@ def test_status_unknown_platform_errors(capsys, tmp_path, monkeypatch):
     err = capsys.readouterr().err
     assert "bitbucket" in err
     assert "github" in err
+
+
+# ── branches ──────────────────────────────────────────────────────────────────
+
+def _make_repo_with_branch(tmp_path, branch="main", ahead=0, behind=0, upstream=True):
+    """Create a repo with optional branch, ahead/behind commits, and upstream tracking."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", "-q", str(origin), str(seed)], check=True, capture_output=True)
+    _commit(seed, "init")
+    _git(seed, "push", "-q", "origin", "HEAD:main")
+    d = tmp_path / "github" / "r"
+    d.parent.mkdir()
+    subprocess.run(["git", "clone", "-q", str(origin), str(d)], check=True, capture_output=True)
+    # Add behind commits
+    for i in range(behind):
+        _commit(seed, f"b{i}")
+    if behind:
+        _git(seed, "push", "-q", "origin", "HEAD:main")
+        _git(d, "fetch", "-q")
+    # Create/switch to branch
+    if branch != "main":
+        _git(d, "checkout", "-q", "-b", branch)
+    # Add ahead commits
+    for i in range(ahead):
+        _commit(d, f"a{i}")
+    # Set upstream if requested
+    if upstream and branch != "main":
+        _git(d, "branch", "-u", f"origin/{branch}")
+    if not upstream:
+        _git(d, "branch", "--unset-upstream")
+    return d
+
+
+def _git_out_for_test(d):
+    return subprocess.run(["git", "-C", str(d), "rev-parse", "--short", "HEAD"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_branches_up_to_date(capsys, tmp_path):
+    d = _make_repo_with_branch(tmp_path)
+    cmd_branches({"github": {"r": None}}, tmp_path)
+    out = capsys.readouterr().out
+    assert "github/r" in out
+    assert "main -> origin/main" in out
+    assert "(up to date)" in out
+
+
+def test_branches_ahead(capsys, tmp_path):
+    d = _make_repo_with_branch(tmp_path, ahead=2)
+    cmd_branches({"github": {"r": None}}, tmp_path)
+    out = capsys.readouterr().out
+    assert "github/r" in out
+    assert "2 ahead" in out
+    assert "↑" in out
+    assert "↓" not in out
+
+
+def test_branches_behind(capsys, tmp_path):
+    d = _make_repo_with_branch(tmp_path, behind=3)
+    cmd_branches({"github": {"r": None}}, tmp_path)
+    out = capsys.readouterr().out
+    assert "github/r" in out
+    assert "3 behind" in out
+    assert "↓" in out
+
+
+def test_branches_ahead_and_behind(capsys, tmp_path):
+    d = _make_repo_with_branch(tmp_path, ahead=1, behind=2)
+    cmd_branches({"github": {"r": None}}, tmp_path)
+    out = capsys.readouterr().out
+    assert "github/r" in out
+    assert "1 ahead" in out
+    assert "2 behind" in out
+    assert "⚠" in out
+
+
+def test_branches_no_upstream(capsys, tmp_path):
+    d = _make_repo_with_branch(tmp_path, upstream=False)
+    cmd_branches({"github": {"r": None}}, tmp_path)
+    out = capsys.readouterr().out
+    assert "github/r" in out
+    assert "(no upstream)" in out
+
+
+def test_branches_non_default_branch_with_upstream(capsys, tmp_path):
+    _make_repo_with_branch(tmp_path)
+    d = tmp_path / "github" / "r"
+    _git(d, "checkout", "-q", "-b", "feat")
+    _commit(d, "f1")
+    _git(d, "push", "-q", "-u", "origin", "feat")
+    cmd_branches({"github": {"r": None}}, tmp_path)
+    out = capsys.readouterr().out
+    assert "feat -> origin/feat (up to date)" in out
+
+
+def test_branches_upstream_gone(capsys, tmp_path):
+    _make_repo_with_branch(tmp_path)
+    d = tmp_path / "github" / "r"
+    _git(d, "checkout", "-q", "-b", "feat")
+    _commit(d, "f1")
+    _git(d, "push", "-q", "-u", "origin", "feat")
+    _git(d, "push", "-q", "origin", ":feat")
+    _git(d, "fetch", "-q", "--prune")
+    cmd_branches({"github": {"r": None}}, tmp_path)
+    out = capsys.readouterr().out
+    assert "feat -> origin/feat (upstream gone)" in out
+    assert "no upstream" not in out
+
+
+def test_branches_detached_head(capsys, tmp_path):
+    d = _make_repo_with_branch(tmp_path)
+    # Detach HEAD
+    _git(d, "checkout", "-q", "HEAD~0")
+    cmd_branches({"github": {"r": None}}, tmp_path)
+    out = capsys.readouterr().out
+    assert "github/r" in out
+    sha = _git_out_for_test(d)
+    assert f"detached HEAD at {sha}" in out
+
+
+def test_branches_empty_repo(capsys, tmp_path):
+    d = tmp_path / "github" / "r"
+    d.parent.mkdir()
+    subprocess.run(["git", "init", "-q", str(d)], check=True)
+    cmd_branches({"github": {"r": None}}, tmp_path)
+    out = capsys.readouterr().out
+    assert "github/r" in out
+    assert "(no upstream)" in out
+
+
+def test_branches_json_lists_every_repo(capsys, tmp_path):
+    _make_repo_with_branch(tmp_path, ahead=2, behind=1)
+    cmd_branches({"github": {"r": None}}, tmp_path, json_output=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == [{
+        "platform": "github", "path": "r", "branch": "main", "sha": None,
+        "upstream": "origin/main", "ahead": 2, "behind": 1, "state": "tracking",
+    }]
+
+
+def test_branches_json_detached_has_sha_and_no_branch(capsys, tmp_path):
+    d = _make_repo_with_branch(tmp_path)
+    _git(d, "checkout", "-q", "--detach")
+    cmd_branches({"github": {"r": None}}, tmp_path, json_output=True)
+    [entry] = json.loads(capsys.readouterr().out)
+    assert entry["state"] == "detached"
+    assert entry["branch"] is None
+    assert entry["sha"] == _git_out_for_test(d)
+
+
+def test_branches_json_no_repos_is_empty_list(capsys, tmp_path):
+    cmd_branches({"github": {"r": None}}, tmp_path, json_output=True)
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_branches_only_limits_to_platform(capsys, tmp_path):
+    github = _make_repo_with_branch(tmp_path)
+    _gitlab_clone(tmp_path)
+    cmd_branches({"github": {"r": None}, "gitlab": {"gl": None}}, tmp_path, only="github")
+    out = capsys.readouterr().out
+    assert "github/r" in out
+    assert "gitlab/gl" not in out
+
+
+def test_branches_uses_jobs(pool_sizes, tmp_path):
+    _make_repo_with_branch(tmp_path)
+    cmd_branches({"github": {"r": None}}, tmp_path, jobs=3)
+    assert pool_sizes == [3]
+
+
+def test_branches_default_pool_size_is_max_workers(pool_sizes, tmp_path):
+    from polygit.repo import MAX_WORKERS
+    _make_repo_with_branch(tmp_path)
+    cmd_branches({"github": {"r": None}}, tmp_path)
+    assert pool_sizes == [MAX_WORKERS]

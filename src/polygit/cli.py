@@ -1,7 +1,7 @@
 import sys
 import argparse
 from .config import find_config, load_config, HOSTS
-from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push
+from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push, cmd_branches
 from .repos import cmd_repos
 
 
@@ -54,6 +54,12 @@ def main():
     push_p.add_argument("--only", dest="only_platform", help="Limit to a single platform (e.g. github)")
     _add_jobs(push_p)
 
+    branches_p = sub.add_parser("branches", help="Show current branch and tracking status per repo (as of last fetch)")
+    branches_p.add_argument("--json", action="store_true",
+                            help="Print branch status for every repo as a JSON list")
+    branches_p.add_argument("--only", dest="only_platform", help="Limit to a single platform (e.g. github)")
+    _add_jobs(branches_p)
+
     sub.add_parser("repos", help="Discover drift between .pgit and the filesystem")
 
     args = parser.parse_args()
@@ -80,11 +86,12 @@ def main():
     jobs = getattr(args, "jobs", None)
 
     commands = {
-        "sync":   lambda: cmd_sync(config, base, jobs=jobs),
-        "status": lambda: cmd_status(config, base, json_output=args.json, only=only_platform, jobs=jobs),
-        "pull":   lambda: cmd_pull(config, base, dry_run=args.dry_run, only=only_platform, jobs=jobs),
-        "push":   lambda: cmd_push(config, base, mode=args.push_mode, dry_run=args.dry_run, only=only_platform, jobs=jobs),
-        "repos":  lambda: cmd_repos(config, base, config_path),
+        "sync":     lambda: cmd_sync(config, base, jobs=jobs),
+        "status":   lambda: cmd_status(config, base, json_output=args.json, only=only_platform, jobs=jobs),
+        "pull":     lambda: cmd_pull(config, base, dry_run=args.dry_run, only=only_platform, jobs=jobs),
+        "push":     lambda: cmd_push(config, base, mode=args.push_mode, dry_run=args.dry_run, only=only_platform, jobs=jobs),
+        "branches": lambda: cmd_branches(config, base, json_output=args.json, only=only_platform, jobs=jobs),
+        "repos":    lambda: cmd_repos(config, base, config_path),
     }
     commands[args.command]()
 

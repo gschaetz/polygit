@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -320,3 +321,102 @@ def cmd_push(config, base, mode="interactive", dry_run=False, only=None, jobs=No
                 print("  Skipped.")
                 continue
             _commit_and_push(d, label, msg)
+
+
+AHEAD = f"{_Y}↑{_RST}"
+
+
+def _git_out(d, *args):
+    result = subprocess.run(["git", "-C", str(d), *args], capture_output=True, text=True)
+    return result.stdout.strip("\n") if result.returncode == 0 else None
+
+
+def _get_branch_info(d):
+    """Return (branch, upstream, ahead, behind, state) for a repo.
+
+    state is one of "tracking", "none" (no upstream configured), "gone"
+    (upstream configured but deleted on the remote) or "detached" (branch
+    then holds the short SHA). Reads local refs only, so counts reflect the
+    last fetch.
+    """
+    out = _git_out(
+        d, "for-each-ref", "refs/heads",
+        "--format=%(HEAD)%09%(refname:short)%09%(upstream:short)%09%(upstream:track,nobracket)",
+    )
+    for line in (out or "").splitlines():
+        head, branch, upstream, track = line.split("\t")
+        if head != "*":
+            continue
+        if not upstream:
+            return branch, None, 0, 0, "none"
+        if track == "gone":
+            return branch, upstream, 0, 0, "gone"
+        ahead = re.search(r"ahead (\d+)", track)
+        behind = re.search(r"behind (\d+)", track)
+        return branch, upstream, int(ahead[1]) if ahead else 0, int(behind[1]) if behind else 0, "tracking"
+
+    # No local branch is checked out: unborn branch (empty repo) or detached HEAD.
+    branch = _git_out(d, "symbolic-ref", "--short", "-q", "HEAD")
+    if branch:
+        return branch, None, 0, 0, "none"
+    return _git_out(d, "rev-parse", "--short", "HEAD") or "?", None, 0, 0, "detached"
+
+
+def _format_branch_info(platform, local_path, branch, upstream, ahead, behind, state):
+    """Format branch info for a single repo."""
+    label = f"{platform}/{local_path}"
+    if state == "detached":
+        return f"{WARN} {label}: detached HEAD at {branch}"
+    if state == "none":
+        return f"{_Y}~{_RST} {label}: {branch} (no upstream)"
+    if state == "gone":
+        return f"{WARN} {label}: {branch} -> {upstream} (upstream gone)"
+
+    if ahead == 0 and behind == 0:
+        return f"{OK} {_DIM}{label}: {branch} -> {upstream} (up to date){_RST}"
+    if ahead and behind:
+        return f"{WARN} {label}: {branch} -> {upstream} ({ahead} ahead, {behind} behind)"
+    if ahead:
+        return f"{AHEAD} {label}: {branch} -> {upstream} ({ahead} ahead)"
+    return f"{UPD} {label}: {branch} -> {upstream} ({behind} behind)"
+
+
+def cmd_branches(config, base, json_output=False, only=None, jobs=None):
+    """Show current branch and tracking status for each repo (as of the last fetch)."""
+    repos = list(each_existing_repo(config, base, only=only))
+
+    if not repos:
+        print("[]" if json_output else "No cloned repos found.")
+        return
+
+    results = []
+
+    def _check(platform, local_path, d):
+        return (platform, local_path, *_get_branch_info(d))
+
+    with _pool(jobs) as pool:
+        futures = {pool.submit(_check, p, lp, d): (p, lp) for p, lp, _, d in repos}
+        for f in as_completed(futures):
+            results.append(f.result())
+
+    results.sort()
+
+    if json_output:
+        entries = [
+            {
+                "platform": platform,
+                "path": local_path,
+                "branch": None if state == "detached" else branch,
+                "sha": branch if state == "detached" else None,
+                "upstream": upstream,
+                "ahead": ahead,
+                "behind": behind,
+                "state": state,
+            }
+            for platform, local_path, branch, upstream, ahead, behind, state in results
+        ]
+        print(json.dumps(entries))
+        return
+
+    for result in results:
+        print(_format_branch_info(*result))

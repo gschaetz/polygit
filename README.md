@@ -14,6 +14,7 @@ pgit status    # show repos with uncommitted changes
 pgit pull      # pull all repos, auto-stashing local changes
 pgit push      # interactively commit and push dirty repos
 pgit repos     # discover drift between .pgit and the filesystem
+pgit branches  # show current branch and tracking status per repo
 ```
 
 `status`, `pull`, `push` *and* `sync` accept `--jobs N` to control how many
@@ -23,18 +24,20 @@ repositories are processed in parallel. The default (when omitted) is 8.
 pgit sync --jobs 4
 pgit status --jobs 1
 pgit pull   --only github --dry-run --jobs 4
+pgit branches --only github --jobs 4
 ```
 
 `N` must be a positive integer; otherwise the command prints a clear error and
 exits with status 2.
 
 `status`, `pull` and `push` accept `--only <platform>` to operate on a single platform
-(e.g. `github`) instead of all of them:
+(e.g. `github`) instead of all of them. `branches` also accepts `--only`:
 
 ```bash
 pgit status --only gitlab
 pgit pull   --only github --dry-run
 pgit push   --only gitlab --all
+pgit branches --only github
 ```
 
 Passing an unknown platform prints an error to stderr and exits 1.
@@ -85,6 +88,52 @@ pgit push --dry-run      # list dirty repos that would be committed and pushed
 ```
 
 `pull --dry-run` compares against the last fetched state of each upstream, so run `pgit sync` first for current numbers.
+
+## branches
+
+`pgit branches` shows the current branch and upstream tracking status for each cloned repository:
+
+```bash
+pgit branches
+```
+
+Output shows one line per repo:
+
+- **✓** — up to date with upstream
+- **↑** — ahead of upstream (needs a push)
+- **↓** — behind upstream (needs a pull)
+- **⚠** — diverged (both ahead and behind), upstream deleted on the remote, or detached HEAD
+- **~** — branch has no upstream configured (also an empty repo)
+
+```text
+✓ github/gschaetz/polygit: main -> origin/main (up to date)
+↑ github/gschaetz/tools: main -> origin/main (2 ahead)
+↓ github/gschaetz/notes: main -> origin/main (3 behind)
+⚠ github/gschaetz/dotfiles: main -> origin/main (3 ahead, 1 behind)
+⚠ github/gschaetz/old: feat -> origin/feat (upstream gone)
+⚠ github/gschaetz/lib: detached HEAD at a1b2c3d
+~ github/gschaetz/experiment: feature-xyz (no upstream)
+```
+
+Like `pull --dry-run`, this reads the last fetched state of each upstream, so run `pgit sync` first for current numbers.
+
+Use `--only <platform>` to filter by platform (e.g. `pgit branches --only gitlab`).
+Use `--jobs N` to control parallelism (default: 8).
+
+### branches --json
+
+```bash
+pgit branches --json   # machine-readable status for every cloned repo
+```
+
+Prints a single JSON array on stdout and nothing else. Unlike `status --json`, clean repos are included:
+
+```json
+[{"platform": "github", "path": "gschaetz/polygit", "branch": "main", "sha": null,
+  "upstream": "origin/main", "ahead": 0, "behind": 0, "state": "tracking"}]
+```
+
+`state` is `tracking`, `none` (no upstream), `gone` (upstream deleted on the remote) or `detached`. When detached, `branch` is `null` and `sha` holds the short commit hash. `upstream` is `null` when there is none.
 
 ## status --json
 
