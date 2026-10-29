@@ -6,7 +6,7 @@ import pytest
 from pathlib import Path
 from polygit.config import find_config, load_config, write_config
 from polygit.repos import parse_remote_url, del_nested, _add_to_config
-from polygit.repo import walk, _pull_one, cmd_push, cmd_status, cmd_pull, cmd_sync, cmd_branches, cmd_commit, cmd_merge
+from polygit.repo import walk, _pull_one, cmd_push, cmd_status, cmd_pull, cmd_sync, cmd_branches, cmd_commit, cmd_merge, cmd_review
 
 
 @pytest.fixture(autouse=True)
@@ -1036,3 +1036,374 @@ def test_merge_requires_branch_argument(capsys, tmp_path, monkeypatch):
 def test_merge_no_ff_and_squash_are_exclusive(capsys, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert _run_main(monkeypatch, "merge", "main", "--no-ff", "--squash") == 2
+
+
+
+# ── review ────────────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _no_platform_tokens(monkeypatch):
+    for name in ("GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "GL_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _make_review_repo(tmp_path, rel="r", platform="github", branch="feat/auth", ahead=1,
+                      push=True, upstream=True, remote_url="default"):
+    """Clone of a bare origin whose default branch is main; `branch` is `ahead` commits past it.
+
+    remote_url "default" points origin at git@github.com:o/<rel>.git once pushed (the
+    local bare origin keeps serving the already-fetched refs); None leaves it alone.
+    """
+    tag = rel.replace("/", "-")
+    origin = tmp_path / f"{tag}-origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    seed = tmp_path / f"{tag}-seed"
+    subprocess.run(["git", "clone", "-q", str(origin), str(seed)], check=True, capture_output=True)
+    _commit(seed, "init")
+    _git(seed, "push", "-q", "origin", "HEAD:main")
+    d = tmp_path / platform / rel
+    d.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "clone", "-q", str(origin), str(d)], check=True, capture_output=True)
+    if branch != "main":
+        _git(d, "checkout", "-q", "-b", branch)
+    for i in range(ahead):
+        _commit(d, f"f{i}")
+    if push:
+        _git(d, "push", "-q", "-u", "origin", branch)
+    if not upstream:
+        _git(d, "branch", "--unset-upstream")
+    if remote_url == "default":
+        remote_url = f"git@github.com:o/{rel}.git"
+    if remote_url:
+        _git(d, "remote", "set-url", "origin", remote_url)
+    return d
+
+
+class _FakeResp:
+    def __init__(self, body):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+_OK_BODY = b'{"html_url": "https://github.com/o/r/pull/1", "web_url": "https://gitlab.com/g/r/-/merge_requests/1"}'
+
+
+def _mock_urlopen(monkeypatch, handler=None):
+    """Replace urlopen; returns the list of requests it received."""
+    import urllib.request
+    calls = []
+
+    def fake(req, *a, **kw):
+        calls.append(req)
+        return handler(req) if handler else _FakeResp(_OK_BODY)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    return calls
+
+
+def _payload(req):
+    return json.loads(req.data)
+
+
+def _json_out(capsys):
+    return json.loads(capsys.readouterr().out)
+
+
+def test_review_nothing_to_review(capsys, tmp_path):
+    _make_review_repo(tmp_path, branch="main", ahead=0)
+    cmd_review(CFG, tmp_path)
+    assert "No branches to review." in capsys.readouterr().out
+
+
+def test_review_nothing_to_review_json(capsys, tmp_path):
+    _make_review_repo(tmp_path, branch="main", ahead=0)
+    cmd_review(CFG, tmp_path, mode="auto", json_output=True)
+    assert _json_out(capsys) == []
+
+
+def test_review_upstream_name_differs(capsys, tmp_path):
+    d = _make_review_repo(tmp_path)
+    _git(d, "branch", "--set-upstream-to", "origin/main")
+    cmd_review(CFG, tmp_path, dry_run=True)
+    assert "No branches to review." in capsys.readouterr().out
+
+
+def test_review_no_commits_ahead_of_base(capsys, tmp_path):
+    _make_review_repo(tmp_path, ahead=0)
+    cmd_review(CFG, tmp_path, dry_run=True)
+    assert "No branches to review." in capsys.readouterr().out
+
+
+def test_review_no_upstream(capsys, tmp_path):
+    _make_review_repo(tmp_path, upstream=False)
+    cmd_review(CFG, tmp_path, dry_run=True)
+    assert "No branches to review." in capsys.readouterr().out
+
+
+def test_review_detached_head(capsys, tmp_path):
+    d = _make_review_repo(tmp_path)
+    _git(d, "checkout", "-q", "--detach")
+    cmd_review(CFG, tmp_path, dry_run=True)
+    assert "No branches to review." in capsys.readouterr().out
+
+
+def test_review_unpushed_commits_warn_but_stay_listed(capsys, tmp_path):
+    d = _make_review_repo(tmp_path)
+    _commit(d, "unpushed")
+    cmd_review(CFG, tmp_path, mode="auto", dry_run=True, json_output=True)
+    captured = capsys.readouterr()
+    assert "unpushed commits" in captured.err
+    entries = json.loads(captured.out)
+    assert [e["path"] for e in entries] == ["r"]
+
+
+def test_review_unresolved_base_fails_that_repo_only(capsys, tmp_path):
+    bad = _make_review_repo(tmp_path, rel="bad")
+    _make_review_repo(tmp_path, rel="good")
+    _git(bad, "remote", "set-head", "origin", "-d")
+    _git(bad, "update-ref", "-d", "refs/remotes/origin/main")
+    cfg = {"github": {"bad": None, "good": None}}
+    cmd_review(cfg, tmp_path, mode="auto", dry_run=True, json_output=True)
+    by_path = {e["path"]: e for e in _json_out(capsys)}
+    assert by_path["bad"]["status"] == "failed"
+    assert "--base" in by_path["bad"]["error"]
+    assert by_path["good"]["status"] == "planned"
+
+
+def test_review_default_base_is_remote_default_branch(tmp_path, monkeypatch):
+    _make_review_repo(tmp_path)
+    monkeypatch.setenv("GH_TOKEN", "tok")
+    calls = _mock_urlopen(monkeypatch)
+    cmd_review(CFG, tmp_path, mode="auto")
+    assert _payload(calls[0])["base"] == "main"
+
+
+def test_review_base_override(tmp_path, monkeypatch):
+    # main <- release (1 commit) <- feat/auth (1 commit)
+    d = _make_review_repo(tmp_path, branch="release", remote_url=None)
+    _git(d, "checkout", "-q", "-b", "feat/auth")
+    _commit(d, "feature")
+    _git(d, "push", "-q", "-u", "origin", "feat/auth")
+    _git(d, "remote", "set-url", "origin", "git@github.com:o/r.git")
+    monkeypatch.setenv("GH_TOKEN", "tok")
+    calls = _mock_urlopen(monkeypatch)
+
+    cmd_review(CFG, tmp_path, mode="auto")
+    assert _payload(calls[0])["base"] == "main"
+    assert "Commits: 2" in _payload(calls[0])["body"]
+
+    calls.clear()
+    cmd_review(CFG, tmp_path, mode="auto", base_branch="release")
+    assert _payload(calls[0])["base"] == "release"
+    assert "Commits: 1" in _payload(calls[0])["body"]
+
+
+def test_review_base_override_in_fallback_url_and_eligibility(capsys, tmp_path):
+    d = _make_review_repo(tmp_path, branch="release", remote_url=None)
+    _git(d, "checkout", "-q", "-b", "feat/auth")
+    _git(d, "push", "-q", "-u", "origin", "feat/auth")   # same commits as release: nothing ahead of it
+    _git(d, "remote", "set-url", "origin", "git@github.com:o/r.git")
+    cmd_review(CFG, tmp_path, mode="auto", base_branch="release", dry_run=True)
+    assert "No branches to review." in capsys.readouterr().out
+    cmd_review(CFG, tmp_path, mode="auto", dry_run=True, json_output=True)
+    assert "compare/main...feat/auth" in _json_out(capsys)[0]["url"]
+
+
+def test_review_interactive_dry_run_prompts_nothing(capsys, tmp_path, monkeypatch):
+    _make_review_repo(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("dry-run must not prompt"))
+    cmd_review(CFG, tmp_path, dry_run=True)
+    assert "<prompted>" in capsys.readouterr().out
+
+
+def test_review_interactive_creates_and_skips(tmp_path, monkeypatch):
+    _make_review_repo(tmp_path, rel="a")
+    _make_review_repo(tmp_path, rel="b")
+    monkeypatch.setenv("GH_TOKEN", "tok")
+    calls = _mock_urlopen(monkeypatch)
+    answers = iter(["Add auth", "Why", "", ])   # repo a: title + body; repo b: blank title
+    monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+    cmd_review({"github": {"a": None, "b": None}}, tmp_path)
+    assert len(calls) == 1
+    assert _payload(calls[0])["title"] == "Add auth"
+    assert _payload(calls[0])["body"] == "Why"
+    assert "/repos/o/a/pulls" in calls[0].full_url
+
+
+def test_review_all_uses_one_title_everywhere(tmp_path, monkeypatch):
+    _make_review_repo(tmp_path, rel="a")
+    _make_review_repo(tmp_path, rel="b")
+    monkeypatch.setenv("GH_TOKEN", "tok")
+    calls = _mock_urlopen(monkeypatch)
+    answers = iter(["Shared title", "Shared body"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+    cmd_review({"github": {"a": None, "b": None}}, tmp_path, mode="all")
+    assert sorted(c.full_url for c in calls) == [
+        "https://api.github.com/repos/o/a/pulls", "https://api.github.com/repos/o/b/pulls"]
+    assert {_payload(c)["title"] for c in calls} == {"Shared title"}
+    assert {_payload(c)["body"] for c in calls} == {"Shared body"}
+
+
+def test_review_all_blank_title_aborts(capsys, tmp_path, monkeypatch):
+    _make_review_repo(tmp_path)
+    monkeypatch.setenv("GH_TOKEN", "tok")
+    calls = _mock_urlopen(monkeypatch)
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    cmd_review(CFG, tmp_path, mode="all")
+    assert calls == []
+    assert "Aborted." in capsys.readouterr().out
+
+
+def test_review_all_blank_title_aborts_with_json(capsys, tmp_path, monkeypatch):
+    _make_review_repo(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    cmd_review(CFG, tmp_path, mode="all", json_output=True)
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == []
+    assert "PR title" in captured.err
+
+
+def test_review_auto_json_is_only_stdout_when_creating(capsys, tmp_path, monkeypatch):
+    _make_review_repo(tmp_path)
+    monkeypatch.setenv("GH_TOKEN", "tok")
+    calls = _mock_urlopen(monkeypatch)
+    cmd_review(CFG, tmp_path, mode="auto", json_output=True)
+    entries = _json_out(capsys)          # raises if anything but the array reached stdout
+    assert entries == [{"platform": "github", "path": "r", "branch": "feat/auth",
+                        "status": "created", "url": "https://github.com/o/r/pull/1", "error": None}]
+    assert _payload(calls[0])["title"] == "feat: auth"
+    assert _payload(calls[0])["head"] == "feat/auth"
+
+
+def test_review_github_request_shape(tmp_path, monkeypatch):
+    _make_review_repo(tmp_path)
+    monkeypatch.setenv("GH_TOKEN", "tok")
+    calls = _mock_urlopen(monkeypatch)
+    cmd_review(CFG, tmp_path, mode="auto")
+    req = calls[0]
+    assert req.full_url == "https://api.github.com/repos/o/r/pulls"
+    assert req.get_method() == "POST"
+    assert req.get_header("Authorization") == "Bearer tok"
+
+
+def test_review_github_token_priority(tmp_path, monkeypatch):
+    _make_review_repo(tmp_path)
+    calls = _mock_urlopen(monkeypatch)
+    monkeypatch.setenv("GITHUB_TOKEN", "second")
+    cmd_review(CFG, tmp_path, mode="auto")
+    assert calls[-1].get_header("Authorization") == "Bearer second"
+    monkeypatch.setenv("GH_TOKEN", "first")
+    cmd_review(CFG, tmp_path, mode="auto")
+    assert calls[-1].get_header("Authorization") == "Bearer first"
+
+
+def test_review_gitlab_subgroup_uses_encoded_path(capsys, tmp_path, monkeypatch):
+    _make_review_repo(tmp_path, rel="g/sub/r", platform="gitlab", remote_url="git@gitlab.com:g/sub/r.git")
+    calls = _mock_urlopen(monkeypatch)
+    cfg = {"gitlab": {"g/sub": {"r": None}}}
+
+    monkeypatch.setenv("GL_TOKEN", "second")
+    cmd_review(cfg, tmp_path, mode="auto", json_output=True)
+    assert calls[-1].get_header("Private-token") == "second"
+    monkeypatch.setenv("GITLAB_TOKEN", "first")
+    cmd_review(cfg, tmp_path, mode="auto", json_output=True)
+    assert calls[-1].get_header("Private-token") == "first"
+
+    req = calls[-1]
+    assert req.full_url == "https://gitlab.com/api/v4/projects/g%2Fsub%2Fr/merge_requests"
+    from urllib.parse import parse_qs
+    form = parse_qs(req.data.decode())
+    assert form["source_branch"] == ["feat/auth"]
+    assert form["target_branch"] == ["main"]
+    assert form["title"] == ["feat: auth"]
+
+
+def test_review_no_token_prints_manual_url(capsys, tmp_path):
+    _make_review_repo(tmp_path)
+    cmd_review(CFG, tmp_path, mode="auto", json_output=True)
+    entry = _json_out(capsys)[0]
+    assert entry["status"] == "manual"
+    assert entry["url"] == "https://github.com/o/r/compare/main...feat/auth?expand=1"
+
+
+def test_review_gitlab_manual_url(capsys, tmp_path):
+    _make_review_repo(tmp_path, platform="gitlab", remote_url="git@gitlab.com:g/r.git")
+    cmd_review({"gitlab": {"r": None}}, tmp_path, mode="auto", json_output=True)
+    url = _json_out(capsys)[0]["url"]
+    assert url == ("https://gitlab.com/g/r/-/merge_requests/new"
+                   "?merge_request[source_branch]=feat/auth&merge_request[target_branch]=main")
+
+
+def test_review_api_failure_reports_body_and_continues(capsys, tmp_path, monkeypatch):
+    import io
+    import urllib.error
+    _make_review_repo(tmp_path, rel="a")
+    _make_review_repo(tmp_path, rel="b")
+    monkeypatch.setenv("GH_TOKEN", "tok")
+
+    def handler(req):
+        if "/o/a/" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 422, "Unprocessable Entity", {},
+                                         io.BytesIO(b'{"message": "A pull request already exists"}'))
+        return _FakeResp(_OK_BODY)
+
+    _mock_urlopen(monkeypatch, handler)
+    cmd_review({"github": {"a": None, "b": None}}, tmp_path, mode="auto", json_output=True)
+    a, b = _json_out(capsys)
+    assert a["path"] == "a" and a["status"] == "failed"
+    assert "422" in a["error"] and "already exists" in a["error"]
+    assert a["url"] == "https://github.com/o/a/compare/main...feat/auth?expand=1"
+    assert b["path"] == "b" and b["status"] == "created"
+
+
+def test_review_only_filters_platform(capsys, tmp_path):
+    _make_review_repo(tmp_path, rel="h", platform="github")
+    _make_review_repo(tmp_path, rel="l", platform="gitlab", remote_url="git@gitlab.com:g/l.git")
+    cfg = {"github": {"h": None}, "gitlab": {"l": None}}
+    cmd_review(cfg, tmp_path, mode="auto", dry_run=True, json_output=True, only="github")
+    assert [e["platform"] for e in _json_out(capsys)] == ["github"]
+
+
+@pytest.mark.parametrize("jobs", [1, 2])
+def test_review_jobs_limits_concurrency(tmp_path, monkeypatch, jobs):
+    import threading
+    import time
+    names = ["r1", "r2", "r3", "r4"]
+    for n in names:
+        _make_review_repo(tmp_path, rel=n)
+    monkeypatch.setenv("GH_TOKEN", "tok")
+    lock = threading.Lock()
+    state = {"now": 0, "peak": 0}
+
+    def handler(req):
+        with lock:
+            state["now"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+        time.sleep(0.05)
+        with lock:
+            state["now"] -= 1
+        return _FakeResp(_OK_BODY)
+
+    calls = _mock_urlopen(monkeypatch, handler)
+    cmd_review({"github": {n: None for n in names}}, tmp_path, mode="auto", jobs=jobs)
+    assert len(calls) == 4
+    assert state["peak"] <= jobs
+
+
+def test_review_cli_all_and_auto_are_exclusive(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert _run_main(monkeypatch, "review", "--all", "--auto") == 2
+
+
+def test_review_cli_json_requires_non_interactive_mode(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert _run_main(monkeypatch, "review", "--json") == 2
+    assert "--json requires --all or --auto" in capsys.readouterr().err

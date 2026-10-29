@@ -1,6 +1,10 @@
 import json
+import os
 import re
 import shutil
+import urllib.error
+import urllib.parse
+import urllib.request
 import subprocess
 import sys
 import threading
@@ -662,3 +666,378 @@ def cmd_branches(config, base, json_output=False, only=None, jobs=None):
 
     for result in results:
         print(_format_branch_info(*result))
+
+
+def _parse_remote_url(remote_url):
+    """Return (host, path) from an SSH or HTTPS remote URL.
+
+    path keeps subgroups and drops a trailing ".git". Returns (None, None) on
+    unparseable input.
+    """
+    remote_url = (remote_url or "").strip()
+    if not remote_url:
+        return None, None
+    if remote_url.startswith("git@"):
+        host_part, path = remote_url.split(":", 1)
+        host = host_part.split("@", 1)[1] if "@" in host_part else host_part
+    elif "://" in remote_url:
+        parsed = urllib.parse.urlparse(remote_url)
+        host = parsed.hostname
+        path = parsed.path.lstrip("/")
+    else:
+        return None, None
+    if path is None:
+        return None, None
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    return host, path
+
+
+def _get_token(platform):
+    if platform == "github":
+        return os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    return os.environ.get("GITLAB_TOKEN") or os.environ.get("GL_TOKEN")
+
+
+def _resolve_base(d, remote, base_arg):
+    """Return the base branch name for a repo, or None if unresolved.
+
+    Uses --base when given, otherwise the remote's default branch via
+    refs/remotes/<remote>/HEAD, falling back to <remote>/main then <remote>/master.
+    """
+    if base_arg:
+        return base_arg
+    out = subprocess.run(
+        ["git", "-C", str(d), "symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"],
+        capture_output=True, text=True,
+    )
+    if out.returncode == 0:
+        ref = out.stdout.strip()
+        prefix = f"{remote}/"
+        if ref.startswith(prefix):
+            return ref[len(prefix):]
+    for cand in ("main", "master"):
+        check = subprocess.run(
+            ["git", "-C", str(d), "rev-parse", "--verify", "-q", f"{remote}/{cand}"],
+            capture_output=True, text=True,
+        )
+        if check.returncode == 0:
+            return cand
+    return None
+
+
+def _github_create_pr(token, owner, repo, title, body, head, base):
+    """Create a GitHub PR via REST API; return the PR URL or raise."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+    data = json.dumps({"title": title, "body": body, "head": head, "base": base}).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        return result.get("html_url")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        msg = body
+        try:
+            parsed = json.loads(body)
+            if isinstance(parsed, dict):
+                msg = parsed.get("message") or parsed.get("error") or body
+        except (ValueError, json.JSONDecodeError):
+            pass
+        raise RuntimeError(f"GitHub API error {e.code}: {msg}") from e
+
+
+def _gitlab_create_mr(token, project_path, title, body, source_branch, target_branch):
+    """Create a GitLab merge request via API v4; return the MR URL or raise."""
+    encoded = urllib.parse.quote(project_path, safe="")
+    url = f"https://gitlab.com/api/v4/projects/{encoded}/merge_requests"
+    data = urllib.parse.urlencode({
+        "source_branch": source_branch,
+        "target_branch": target_branch,
+        "title": title,
+        "description": body,
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("PRIVATE-TOKEN", token)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        return result.get("web_url")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        msg = body
+        try:
+            parsed = json.loads(body)
+            if isinstance(parsed, dict):
+                msg = parsed.get("message") or parsed.get("error") or body
+        except (ValueError, json.JSONDecodeError):
+            pass
+        raise RuntimeError(f"GitLab API error {e.code}: {msg}") from e
+
+
+def _fallback_url(platform, remote_url, head, base):
+    """Construct a web URL for manually creating a PR/MR, or the raw URL."""
+    host, path = _parse_remote_url(remote_url)
+    if host is None or path is None:
+        return remote_url
+    enc_head = urllib.parse.quote(head, safe="/")
+    enc_base = urllib.parse.quote(base, safe="/")
+    if platform == "github":
+        return f"https://{host}/{path}/compare/{enc_base}...{enc_head}?expand=1"
+    return f"https://{host}/{path}/-/merge_requests/new?merge_request[source_branch]={enc_head}&merge_request[target_branch]={enc_base}"
+
+
+def _auto_title(branch):
+    """Auto-generate a conventional-commit style title from a branch name."""
+    branch = branch or ""
+    if "/" in branch:
+        type_part, rest = branch.split("/", 1)
+        return f"{type_part}: {rest.replace('-', ' ').replace('_', ' ')}"
+    return branch.replace("-", " ").replace("_", " ").strip()
+
+
+def _get_review_candidates(config, base, only=None, base_branch=None):
+    """Return candidate dicts for repos with pushed branches ahead of the base."""
+    candidates = []
+    failed = []
+    for platform, local_path, remote_path, d in each_existing_repo(config, base, only=only):
+        branch, upstream, ahead, behind, state = _get_branch_info(d)
+        if state != "tracking" or not upstream or "/" not in upstream:
+            continue
+        if "/" not in upstream:
+            continue
+        remote, remote_branch = upstream.split("/", 1)
+        if remote_branch != branch:
+            continue
+        resolved_base = _resolve_base(d, remote, base_branch)
+        if resolved_base is None:
+            failed.append((platform, local_path, branch, d, "could not resolve base branch; use --base"))
+            continue
+        if branch == resolved_base:
+            continue
+        count_result = subprocess.run(
+            ["git", "-C", str(d), "rev-list", "--count", f"{remote}/{resolved_base}..{remote}/{branch}"],
+            capture_output=True, text=True,
+        )
+        try:
+            count = int(count_result.stdout.strip()) if count_result.returncode == 0 else 0
+        except (ValueError, AttributeError):
+            count = 0
+        if count <= 0:
+            continue
+        candidates.append({
+            "platform": platform,
+            "local_path": local_path,
+            "d": d,
+            "remote": remote,
+            "branch": branch,
+            "base": resolved_base,
+            "count": count,
+            "unpushed": ahead > 0,
+        })
+    return candidates, failed
+
+
+def _review_task(c, title, body, dry_run, json_output, results, results_lock):
+    """Create (or plan) a PR for one review candidate."""
+    platform = c["platform"]
+    local_path = c["local_path"]
+    d = c["d"]
+    branch = c["branch"]
+    base = c["base"]
+    label = f"{platform}/{local_path}"
+    remote_url = _git_out(d, "remote", "get-url", c["remote"]) or ""
+    fallback = _fallback_url(platform, remote_url, branch, base)
+    token = _get_token(platform)
+
+    if dry_run:
+        entry = {
+            "platform": platform,
+            "path": local_path,
+            "branch": branch,
+            "status": "planned",
+            "url": fallback,
+            "error": None,
+        }
+        with results_lock:
+            results.append(entry)
+        if not json_output:
+            print(f"{OK} {label}: {branch} -> {base} (title: {title})")
+            print(f"  URL: {fallback}")
+        return
+
+    url = None
+    error = None
+    status = "created"
+    if token:
+        host, path = _parse_remote_url(remote_url)
+        try:
+            if platform == "github":
+                owner, repo = path.split("/", 1)
+                url = _github_create_pr(token, owner, repo, title, body, branch, base)
+            else:
+                url = _gitlab_create_mr(token, path, title, body, branch, base)
+        except Exception as e:  # noqa: BLE001
+            status = "failed"
+            error = str(e)
+            url = fallback
+    else:
+        url = fallback
+        status = "manual"
+
+    entry = {
+        "platform": platform,
+        "path": local_path,
+        "branch": branch,
+        "status": status,
+        "url": url,
+        "error": error,
+    }
+    with results_lock:
+        results.append(entry)
+    if not json_output:
+        if status == "failed":
+            print(f"{ERR} {label}: {error}")
+            print(f"  URL: {fallback}")
+        elif token:
+            print(f"{OK} {label}: PR created -> {url}")
+        else:
+            print(f"{_Y}~{_RST} {label}: no token; open manually -> {url}")
+
+
+def cmd_review(config, base, mode="interactive", base_branch=None, dry_run=False, only=None, jobs=None, json_output=False):
+    """Open PRs for pushed branches ahead of the default branch."""
+    candidates, failed = _get_review_candidates(config, base, only=only, base_branch=base_branch)
+
+    if not candidates and not failed:
+        if json_output:
+            print(json.dumps([]))
+        else:
+            print("No branches to review.")
+        return
+
+    results = []
+    results_lock = threading.Lock()
+
+    for platform, local_path, branch, d, err in failed:
+        entry = {
+            "platform": platform,
+            "path": local_path,
+            "branch": branch,
+            "status": "failed",
+            "url": None,
+            "error": err,
+        }
+        with results_lock:
+            results.append(entry)
+        if not json_output:
+            print(f"{ERR} {platform}/{local_path}: {err}")
+
+    for c in candidates:
+        if c["unpushed"]:
+            print(f"{WARN} {c['platform']}/{c['local_path']}: branch '{c['branch']}' has unpushed commits; they will not be in the PR.",
+                  file=sys.stderr)
+
+    if mode == "interactive":
+        for c in candidates:
+            label = f"{c['platform']}/{c['local_path']}"
+            if dry_run:
+                remote_url = _git_out(c["d"], "remote", "get-url", c["remote"]) or ""
+                url = _fallback_url(c["platform"], remote_url, c["branch"], c["base"])
+                print(f"{OK} {label}: {c['branch']} -> {c['base']} (title: <prompted>)")
+                print(f"  URL: {url}")
+                continue
+            diff = subprocess.run(
+                ["git", "-C", str(c["d"]), "diff", "--stat", f"{c['remote']}/{c['base']}...{c['remote']}/{c['branch']}"],
+                capture_output=True, text=True,
+            ).stdout.strip()
+            print(f"\n{label}:")
+            print(f"  {c['branch']} -> {c['base']}")
+            if diff:
+                for line in diff.splitlines():
+                    print(f"    {line}")
+            title = input("  PR title (blank to skip): ").strip()
+            if not title:
+                print("  Skipped.")
+                continue
+            body = input("  PR body (blank for none): ").strip()
+            _review_task(c, title, body, dry_run, json_output, results, results_lock)
+
+    elif mode == "all":
+        if not json_output:
+            print("Eligible repos:")
+            for c in candidates:
+                print(f"  {c['platform']}/{c['local_path']}: {c['branch']} -> {c['base']}")
+        prompt = "\nPR title for all repos (blank to abort): "
+        if json_output:
+            print(prompt, end="", file=sys.stderr, flush=True)
+            title = input().strip()
+        else:
+            title = input(prompt).strip()
+        if not title:
+            if json_output:
+                print(json.dumps([]))
+            else:
+                print("Aborted.")
+            return
+        body_prompt = "\nPR body (blank for none): "
+        if json_output:
+            print(body_prompt, end="", file=sys.stderr, flush=True)
+            body = input().strip()
+        else:
+            body = input(body_prompt).strip()
+        if dry_run:
+            for c in candidates:
+                remote_url = _git_out(c["d"], "remote", "get-url", c["remote"]) or ""
+                url = _fallback_url(c["platform"], remote_url, c["branch"], c["base"])
+                with results_lock:
+                    results.append({
+                        "platform": c["platform"],
+                        "path": c["local_path"],
+                        "branch": c["branch"],
+                        "status": "planned",
+                        "url": url,
+                        "error": None,
+                    })
+                if not json_output:
+                    print(f"{OK} {c['platform']}/{c['local_path']}: {c['branch']} -> {c['base']} (title: {title})")
+        else:
+            with _pool(jobs) as pool:
+                futures = [pool.submit(_review_task, c, title, body, False, json_output, results, results_lock) for c in candidates]
+                for f in as_completed(futures):
+                    f.result()
+
+    elif mode == "auto":
+        if dry_run:
+            for c in candidates:
+                title = _auto_title(c["branch"])
+                body = f"Branch: {c['branch']}\nCommits: {c['count']}"
+                remote_url = _git_out(c["d"], "remote", "get-url", c["remote"]) or ""
+                url = _fallback_url(c["platform"], remote_url, c["branch"], c["base"])
+                with results_lock:
+                    results.append({
+                        "platform": c["platform"],
+                        "path": c["local_path"],
+                        "branch": c["branch"],
+                        "status": "planned",
+                        "url": url,
+                        "error": None,
+                    })
+                if not json_output:
+                    print(f"{OK} {c['platform']}/{c['local_path']}: {c['branch']} -> {c['base']} (title: {title})")
+                    print(f"  URL: {url}")
+        else:
+            with _pool(jobs) as pool:
+                futures = [
+                    pool.submit(_review_task, c, _auto_title(c["branch"]), f"Branch: {c['branch']}\nCommits: {c['count']}", False, json_output, results, results_lock)
+                    for c in candidates
+                ]
+                for f in as_completed(futures):
+                    f.result()
+
+    if json_output:
+        results.sort(key=lambda r: (r["platform"], r["path"]))
+        print(json.dumps(results))

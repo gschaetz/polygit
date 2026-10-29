@@ -166,6 +166,50 @@ Prints a single JSON array on stdout and nothing else. Unlike `status --json`, c
 
 `state` is `tracking`, `none` (no upstream), `gone` (upstream deleted on the remote) or `detached`. When detached, `branch` is `null` and `sha` holds the short commit hash. `upstream` is `null` when there is none.
 
+## review
+
+`pgit review` opens a PR/MR for every cloned repo whose current branch has been pushed and is ahead of the default branch:
+
+```bash
+pgit review                # prompt per repo (default)
+pgit review --all          # one PR title/body for all eligible repos
+pgit review --auto         # auto-generate title from branch name, minimal body
+pgit review --auto --dry-run
+pgit review --base release
+pgit review --json
+```
+
+Detection: a repo qualifies when it is tracking the same-named upstream branch (`feat/x` → `origin/feat/x`), that branch is ahead of the base, and it is not itself the base branch. Only local refs are read; run `pgit sync` first if you want current numbers.
+
+The PR base is the remote's default branch (`origin/HEAD`, falling back to `main` then `master`). Pass `--base <branch>` to override it (e.g. for release branches).
+
+With `--auto`, PR titles are generated from branch names (`feat/auth` → `feat: auth`). With `--all`, one title/body is prompted for and shared. In interactive mode you get a per-repo prompt with a diff summary and a blank title skips the repo.
+
+`review` creates PRs via the GitHub/GitLab API when a token is available:
+
+```bash
+GH_TOKEN=<token> pgit review --auto     # GitHub
+GITLAB_TOKEN=<token> pgit review --auto # GitLab
+```
+
+Token scopes: GitHub needs `repo`; GitLab needs `api`. Without a token, `pgit review` prints ready-to-click PR/MR URLs for manual creation.
+
+```bash
+pgit review --auto --dry-run   # list candidates with planned titles/URLs; creates nothing
+pgit review --only github      # review only GitHub repos
+pgit review --jobs 4            # parallelism for non-interactive modes (default: 8)
+```
+
+`--json` (with `--all` or `--auto`) prints a single JSON array on stdout and nothing else.
+
+```json
+[{"platform": "github", "path": "r", "branch": "feat/x", "status": "created", "url": "https://...", "error": null}]
+```
+
+`status` is `created` (PR created via API), `manual` (no token — URL only), `planned` (`--dry-run`), or `failed`.
+
+Branches must be pushed first — run `pgit push` before `pgit review`.
+
 ## status --json
 
 ```bash

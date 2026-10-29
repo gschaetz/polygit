@@ -1,7 +1,7 @@
 import sys
 import argparse
 from .config import find_config, load_config, HOSTS
-from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push, cmd_branches, cmd_commit, cmd_merge
+from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push, cmd_branches, cmd_commit, cmd_merge, cmd_review
 from .repos import cmd_repos
 
 
@@ -80,6 +80,22 @@ def main():
     merge_p.add_argument("--only", dest="only_platform", help="Limit to a single platform (e.g. github)")
     _add_jobs(merge_p)
 
+    review_p = sub.add_parser("review", help="Open PRs for pushed branches ahead of the default branch")
+    review_mode_g = review_p.add_mutually_exclusive_group()
+    review_mode_g.add_argument("--all", dest="review_mode", action="store_const",
+                               const="all", help="One PR title/body for all eligible repos")
+    review_mode_g.add_argument("--auto", dest="review_mode", action="store_const",
+                               const="auto", help='Auto-generate PR title from branch name')
+    review_p.set_defaults(review_mode="interactive")
+    review_p.add_argument("--base", dest="review_base", metavar="BRANCH",
+                          help="Base branch for the PR (default: remote default)")
+    review_p.add_argument("--dry-run", action="store_true",
+                          help="Show what would be reviewed without creating PRs")
+    review_p.add_argument("--json", action="store_true",
+                          help="Print review results as a JSON list")
+    review_p.add_argument("--only", dest="only_platform", help="Limit to a single platform (e.g. github)")
+    _add_jobs(review_p)
+
     branches_p = sub.add_parser("branches", help="Show current branch and tracking status per repo (as of last fetch)")
     branches_p.add_argument("--json", action="store_true",
                             help="Print branch status for every repo as a JSON list")
@@ -97,6 +113,11 @@ def main():
     # Reject --json in interactive commit mode (before config lookup)
     if args.command == "commit" and getattr(args, "json", False) and getattr(args, "commit_mode", None) == "interactive":
         print("Error: --json requires --all or --wip.", file=sys.stderr)
+        sys.exit(2)
+
+    # Reject --json in interactive review mode (before config lookup)
+    if args.command == "review" and getattr(args, "json", False) and getattr(args, "review_mode", None) == "interactive":
+        print("Error: --json requires --all or --auto.", file=sys.stderr)
         sys.exit(2)
 
     config_path = find_config()
@@ -123,6 +144,7 @@ def main():
         "push":     lambda: cmd_push(config, base, mode=args.push_mode, dry_run=args.dry_run, only=only_platform, jobs=jobs),
         "commit":   lambda: cmd_commit(config, base, mode=args.commit_mode, dry_run=args.dry_run, only=only_platform, jobs=jobs, json_output=args.json),
         "merge":    lambda: cmd_merge(config, base, args.target, no_ff=args.no_ff, squash=args.squash, dry_run=args.dry_run, only=only_platform, jobs=jobs, json_output=args.json),
+        "review":   lambda: cmd_review(config, base, mode=args.review_mode, base_branch=args.review_base, dry_run=args.dry_run, only=only_platform, jobs=jobs, json_output=args.json),
         "branches": lambda: cmd_branches(config, base, json_output=args.json, only=only_platform, jobs=jobs),
         "repos":    lambda: cmd_repos(config, base, config_path),
     }
