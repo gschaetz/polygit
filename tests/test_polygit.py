@@ -1,11 +1,19 @@
 import json
+import os
 import subprocess
 import tempfile
 import pytest
 from pathlib import Path
 from polygit.config import find_config, load_config, write_config
 from polygit.repos import parse_remote_url, del_nested, _add_to_config
-from polygit.repo import walk, _pull_one, cmd_push, cmd_status, cmd_pull, cmd_sync, cmd_branches
+from polygit.repo import walk, _pull_one, cmd_push, cmd_status, cmd_pull, cmd_sync, cmd_branches, cmd_commit, cmd_merge
+
+
+@pytest.fixture(autouse=True)
+def _isolated_git_config(monkeypatch):
+    """Keep the developer's global git config (e.g. merge.ff=only) out of the tests."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 # ── parse_remote_url ──────────────────────────────────────────────────────────
@@ -645,3 +653,382 @@ def test_branches_default_pool_size_is_max_workers(pool_sizes, tmp_path):
     _make_repo_with_branch(tmp_path)
     cmd_branches({"github": {"r": None}}, tmp_path)
     assert pool_sizes == [MAX_WORKERS]
+
+
+# ── commit ───────────────────────────────────────────────────────────────────
+
+CFG = {"github": {"r": None}}
+
+
+def _head(d):
+    return subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def _commit_count(d):
+    return len(subprocess.run(["git", "-C", str(d), "log", "--oneline"],
+                              capture_output=True, text=True).stdout.splitlines())
+
+
+def test_commit_nothing_dirty(capsys, tmp_path):
+    _make_clone(tmp_path)
+    cmd_commit(CFG, tmp_path, mode="wip")
+    assert "No dirty repos to commit." in capsys.readouterr().out
+
+
+def test_commit_wip_commits_without_pushing(capsys, tmp_path):
+    d = _dirty_clone(tmp_path)
+    cmd_commit(CFG, tmp_path, mode="wip")
+    assert "committed" in capsys.readouterr().out
+    assert _commit_count(d) == 2
+    assert not is_dirty_for_test(d)
+    ahead = subprocess.run(["git", "-C", str(d), "rev-list", "--count", "@{u}..HEAD"],
+                           capture_output=True, text=True).stdout.strip()
+    assert ahead == "1"
+
+
+def is_dirty_for_test(d):
+    from polygit.repo import is_dirty
+    return is_dirty(d)
+
+
+def test_commit_all_uses_one_message(tmp_path, monkeypatch):
+    d = _dirty_clone(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda *a: "shared msg")
+    cmd_commit(CFG, tmp_path, mode="all")
+    msg = subprocess.run(["git", "-C", str(d), "log", "-1", "--format=%s"],
+                         capture_output=True, text=True).stdout.strip()
+    assert msg == "shared msg"
+
+
+def test_commit_all_blank_aborts(capsys, tmp_path, monkeypatch):
+    d = _dirty_clone(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    cmd_commit(CFG, tmp_path, mode="all")
+    assert "Aborted." in capsys.readouterr().out
+    assert _commit_count(d) == 1
+
+
+def test_commit_interactive_blank_skips(capsys, tmp_path, monkeypatch):
+    d = _dirty_clone(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    cmd_commit(CFG, tmp_path, mode="interactive")
+    assert "Skipped." in capsys.readouterr().out
+    assert _commit_count(d) == 1
+
+
+def test_commit_interactive_commits(tmp_path, monkeypatch):
+    d = _dirty_clone(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda *a: "by hand")
+    cmd_commit(CFG, tmp_path, mode="interactive")
+    assert _commit_count(d) == 2
+
+
+def test_commit_includes_untracked_files(tmp_path):
+    d = _dirty_clone(tmp_path)
+    cmd_commit(CFG, tmp_path, mode="wip")
+    tracked = subprocess.run(["git", "-C", str(d), "ls-files"],
+                             capture_output=True, text=True).stdout.split()
+    assert "x.txt" in tracked
+
+
+def test_commit_hook_failure_reports_commit_failed(capsys, tmp_path):
+    d = _dirty_clone(tmp_path)
+    hook = d / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho 'hook says no'\nexit 1\n")
+    hook.chmod(0o755)
+    cmd_commit(CFG, tmp_path, mode="wip")
+    assert "commit failed" in capsys.readouterr().out
+    assert _commit_count(d) == 1
+
+
+def test_commit_dry_run_changes_nothing(capsys, tmp_path):
+    d = _dirty_clone(tmp_path)
+    cmd_commit(CFG, tmp_path, mode="wip", dry_run=True)
+    assert "github/r" in capsys.readouterr().out
+    assert _commit_count(d) == 1
+    assert (d / "x.txt").exists()
+
+
+def test_commit_wip_uses_jobs(pool_sizes, tmp_path):
+    _dirty_clone(tmp_path)
+    cmd_commit(CFG, tmp_path, mode="wip", jobs=3)
+    assert pool_sizes == [3]
+
+
+def test_commit_json(capsys, tmp_path):
+    d = _dirty_clone(tmp_path)
+    cmd_commit(CFG, tmp_path, mode="wip", json_output=True)
+    out = json.loads(capsys.readouterr().out)
+    assert len(out) == 1
+    assert out[0]["status"] == "committed"
+    assert out[0]["platform"] == "github" and out[0]["path"] == "r"
+    assert out[0]["message"].startswith("WIP ")
+    assert _head(d).startswith(out[0]["sha"])
+
+
+def test_commit_json_failure_has_error(capsys, tmp_path):
+    d = _dirty_clone(tmp_path)
+    hook = d / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho 'hook says no'\nexit 1\n")
+    hook.chmod(0o755)
+    cmd_commit(CFG, tmp_path, mode="wip", json_output=True)
+    out = json.loads(capsys.readouterr().out)
+    assert out[0]["status"] == "failed"
+    assert "commit failed" in out[0]["error"]
+
+
+def test_commit_json_empty(capsys, tmp_path):
+    _make_clone(tmp_path)
+    cmd_commit(CFG, tmp_path, mode="wip", json_output=True)
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_commit_json_all_keeps_stdout_clean(capsys, tmp_path, monkeypatch):
+    _dirty_clone(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda *a: "msg")
+    cmd_commit(CFG, tmp_path, mode="all", json_output=True)
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)[0]["message"] == "msg"
+    assert "Commit message" in captured.err
+
+
+def test_commit_json_all_abort_prints_empty_array(capsys, tmp_path, monkeypatch):
+    _dirty_clone(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    cmd_commit(CFG, tmp_path, mode="all", json_output=True)
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_commit_json_interactive_is_usage_error(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # no .pgit: must fail before config lookup
+    assert _run_main(monkeypatch, "commit", "--json") == 2
+    assert "--json requires --all or --wip" in capsys.readouterr().err
+
+
+def test_push_wip_still_commits_and_pushes(capsys, tmp_path):
+    d = _dirty_clone(tmp_path)
+    cmd_push(CFG, tmp_path, mode="wip")
+    assert "pushed" in capsys.readouterr().out
+    ahead = subprocess.run(["git", "-C", str(d), "rev-list", "--count", "@{u}..HEAD"],
+                           capture_output=True, text=True).stdout.strip()
+    assert ahead == "0"
+
+
+# ── merge ────────────────────────────────────────────────────────────────────
+
+def _merge_repo(tmp_path):
+    """Clone on `feature`, with `main` one commit ahead of where feature branched."""
+    d = _make_clone(tmp_path)
+    _git(d, "checkout", "-qb", "feature")
+    _git(d, "checkout", "-q", "main")
+    _commit(d, "m1")
+    _git(d, "checkout", "-q", "feature")
+    return d
+
+
+def _merge_json(capsys, tmp_path, *args, **kw):
+    cmd_merge(CFG, tmp_path, "main", *args, json_output=True, **kw)
+    out = json.loads(capsys.readouterr().out)
+    assert len(out) == 1
+    return out[0]
+
+
+def test_merge_fast_forward(capsys, tmp_path):
+    d = _merge_repo(tmp_path)
+    cmd_merge(CFG, tmp_path, "main")
+    assert "merged (fast-forward)" in capsys.readouterr().out
+    assert _head(d) == _git_rev(d, "main")
+
+
+def _git_rev(d, ref):
+    return subprocess.run(["git", "-C", str(d), "rev-parse", ref],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_merge_commit_when_diverged(capsys, tmp_path):
+    d = _merge_repo(tmp_path)
+    _commit(d, "f1")
+    cmd_merge(CFG, tmp_path, "main")
+    assert "merged (commit " in capsys.readouterr().out
+    parents = subprocess.run(["git", "-C", str(d), "rev-list", "--parents", "-n", "1", "HEAD"],
+                             capture_output=True, text=True).stdout.split()
+    assert len(parents) == 3
+
+
+def test_merge_no_ff_creates_merge_commit(capsys, tmp_path):
+    d = _merge_repo(tmp_path)
+    cmd_merge(CFG, tmp_path, "main", no_ff=True)
+    assert "merged (commit " in capsys.readouterr().out
+    parents = subprocess.run(["git", "-C", str(d), "rev-list", "--parents", "-n", "1", "HEAD"],
+                             capture_output=True, text=True).stdout.split()
+    assert len(parents) == 3
+
+
+def test_merge_squash_stages_without_committing(capsys, tmp_path):
+    d = _merge_repo(tmp_path)
+    before = _head(d)
+    cmd_merge(CFG, tmp_path, "main", squash=True)
+    assert "squashed (staged)" in capsys.readouterr().out
+    assert _head(d) == before
+    staged = subprocess.run(["git", "-C", str(d), "diff", "--cached", "--name-only"],
+                            capture_output=True, text=True).stdout.split()
+    assert "m1" in staged
+
+
+def test_merge_squash_json_status_is_merged(capsys, tmp_path):
+    _merge_repo(tmp_path)
+    entry = _merge_json(capsys, tmp_path, squash=True)
+    assert entry["status"] == "merged" and entry["strategy"] == "squash"
+
+
+def test_merge_conflict_reports_files_and_leaves_state(capsys, tmp_path):
+    d = _make_clone(tmp_path)
+    _git(d, "checkout", "-qb", "feature")
+    _git(d, "checkout", "-q", "main")
+    (d / "init").write_text("main side")
+    _git(d, "-c", "user.email=t@t.com", "-c", "user.name=T", "commit", "-qam", "m")
+    _git(d, "checkout", "-q", "feature")
+    (d / "init").write_text("feature side")
+    _git(d, "-c", "user.email=t@t.com", "-c", "user.name=T", "commit", "-qam", "f")
+    cmd_merge(CFG, tmp_path, "main")
+    assert "conflict: 1 file(s)" in capsys.readouterr().out
+    merging = subprocess.run(["git", "-C", str(d), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                             capture_output=True)
+    assert merging.returncode == 0
+
+
+def test_merge_conflict_json_lists_files(capsys, tmp_path):
+    d = _make_clone(tmp_path)
+    _git(d, "checkout", "-qb", "feature")
+    _git(d, "checkout", "-q", "main")
+    (d / "init").write_text("main side")
+    _git(d, "-c", "user.email=t@t.com", "-c", "user.name=T", "commit", "-qam", "m")
+    _git(d, "checkout", "-q", "feature")
+    (d / "init").write_text("feature side")
+    _git(d, "-c", "user.email=t@t.com", "-c", "user.name=T", "commit", "-qam", "f")
+    entry = _merge_json(capsys, tmp_path)
+    assert entry["status"] == "conflict"
+    assert entry["conflict_files"] == ["init"]
+
+
+def test_merge_up_to_date(capsys, tmp_path):
+    d = _make_clone(tmp_path)
+    _git(d, "checkout", "-qb", "feature")
+    cmd_merge(CFG, tmp_path, "main")
+    assert "up to date" in capsys.readouterr().out
+
+
+def test_merge_target_equals_current_is_up_to_date(capsys, tmp_path):
+    _make_clone(tmp_path)  # on main
+    cmd_merge(CFG, tmp_path, "main")
+    assert "up to date" in capsys.readouterr().out
+
+
+def test_merge_detached_head_skipped(capsys, tmp_path):
+    d = _merge_repo(tmp_path)
+    _git(d, "checkout", "-q", "--detach")
+    cmd_merge(CFG, tmp_path, "main")
+    assert "skipped: detached HEAD" in capsys.readouterr().out
+
+
+def test_merge_missing_target_skipped(capsys, tmp_path):
+    _make_clone(tmp_path)
+    cmd_merge(CFG, tmp_path, "nope")
+    assert "skipped: target branch 'nope' not found" in capsys.readouterr().out
+
+
+def test_merge_remote_only_branch_is_not_local(capsys, tmp_path):
+    d = _make_clone(tmp_path)
+    _git(d, "checkout", "-qb", "feature")
+    cmd_merge(CFG, tmp_path, "origin/main")
+    assert "not found" in capsys.readouterr().out
+
+
+def test_merge_dirty_tree_skipped(capsys, tmp_path):
+    d = _merge_repo(tmp_path)
+    (d / "wip.txt").write_text("x")
+    before = _head(d)
+    cmd_merge(CFG, tmp_path, "main")
+    assert "skipped: dirty working tree" in capsys.readouterr().out
+    assert _head(d) == before
+
+
+def test_merge_in_progress_skipped(capsys, tmp_path):
+    d = _make_clone(tmp_path)
+    _git(d, "checkout", "-qb", "feature")
+    _git(d, "checkout", "-q", "main")
+    (d / "init").write_text("m")
+    _git(d, "-c", "user.email=t@t.com", "-c", "user.name=T", "commit", "-qam", "m")
+    _git(d, "checkout", "-q", "feature")
+    (d / "init").write_text("f")
+    _git(d, "-c", "user.email=t@t.com", "-c", "user.name=T", "commit", "-qam", "f")
+    subprocess.run(["git", "-C", str(d), "merge", "main"], capture_output=True)
+    cmd_merge(CFG, tmp_path, "main")
+    assert "skipped: merge in progress" in capsys.readouterr().out
+
+
+def test_merge_other_git_error_is_failed(capsys, tmp_path):
+    d = _make_clone(tmp_path)
+    _git(d, "checkout", "--orphan", "other")
+    _git(d, "rm", "-rqf", ".")
+    _commit(d, "unrelated")
+    _git(d, "checkout", "-q", "main")
+    entry = _merge_json_for(capsys, tmp_path, "other")
+    assert entry["status"] == "failed"
+    assert "unrelated histories" in entry["detail"]
+
+
+def _merge_json_for(capsys, tmp_path, target):
+    cmd_merge(CFG, tmp_path, target, json_output=True)
+    return json.loads(capsys.readouterr().out)[0]
+
+
+def test_merge_dry_run_changes_nothing(capsys, tmp_path):
+    d = _merge_repo(tmp_path)
+    before = _head(d)
+    cmd_merge(CFG, tmp_path, "main", dry_run=True)
+    assert "would merge" in capsys.readouterr().out
+    assert _head(d) == before
+    assert not (d / "m1").exists()
+
+
+def test_merge_dry_run_reports_skips(capsys, tmp_path):
+    d = _merge_repo(tmp_path)
+    (d / "wip.txt").write_text("x")
+    cmd_merge(CFG, tmp_path, "main", dry_run=True)
+    assert "skipped: dirty working tree" in capsys.readouterr().out
+
+
+def test_merge_dry_run_json_uses_planned(capsys, tmp_path):
+    _merge_repo(tmp_path)
+    entry = _merge_json(capsys, tmp_path, dry_run=True)
+    assert entry["status"] == "planned"
+
+
+def test_merge_json_shape(capsys, tmp_path):
+    _merge_repo(tmp_path)
+    entry = _merge_json(capsys, tmp_path)
+    assert entry == {"platform": "github", "path": "r", "status": "merged",
+                     "strategy": "default", "detail": "fast-forward"}
+
+
+def test_merge_json_empty(capsys, tmp_path):
+    cmd_merge({}, tmp_path, "main", json_output=True)
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_merge_uses_jobs(pool_sizes, tmp_path):
+    _merge_repo(tmp_path)
+    cmd_merge(CFG, tmp_path, "main", jobs=4)
+    assert pool_sizes == [4]
+
+
+def test_merge_requires_branch_argument(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert _run_main(monkeypatch, "merge") == 2
+
+
+def test_merge_no_ff_and_squash_are_exclusive(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert _run_main(monkeypatch, "merge", "main", "--no-ff", "--squash") == 2

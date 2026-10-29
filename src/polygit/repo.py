@@ -117,25 +117,9 @@ def is_dirty(d):
 
 def _commit_and_push(d, label, msg):
     lines = [f"  Committing {label}..."]
-    add_result = subprocess.run(
-        ["git", "-C", str(d), "add", "-A"],
-        capture_output=True, text=True
-    )
-    if add_result.returncode != 0:
-        out = add_result.stderr.strip() or add_result.stdout.strip()
-        lines.append(f"{ERR} {label}: add failed — {out.splitlines()[-1] if out else 'unknown error'}")
-        _emit(lines)
-        return
-    commit_result = subprocess.run(
-        ["git", "-C", str(d), "commit", "-m", msg],
-        capture_output=True, text=True
-    )
-    if commit_result.returncode != 0:
-        # Error may be on stdout (e.g. "nothing to commit") or stderr (pre-commit hook).
-        # Take the last non-empty line which usually has the actionable message.
-        out = commit_result.stderr.strip() or commit_result.stdout.strip()
-        msg_line = out.splitlines()[-1] if out else "unknown error"
-        lines.append(f"{ERR} {label}: commit failed — {msg_line}")
+    ok, sha, error = _commit_one(d, msg)
+    if not ok:
+        lines.append(f"{ERR} {label}: {error}")
         _emit(lines)
         return
     result = _run_git(["git", "-C", str(d), "push"])
@@ -144,6 +128,36 @@ def _commit_and_push(d, label, msg):
     else:
         lines.append(f"{UPD} {label}: pushed")
     _emit(lines)
+
+
+def _commit_one(d, msg):
+    """Run git add -A then git commit -m msg, returning (ok, sha, error)."""
+    add_result = subprocess.run(
+        ["git", "-C", str(d), "add", "-A"],
+        capture_output=True, text=True
+    )
+    if add_result.returncode != 0:
+        out = add_result.stderr.strip() or add_result.stdout.strip()
+        return False, None, f"add failed — {out.splitlines()[-1] if out else 'unknown error'}"
+    commit_result = subprocess.run(
+        ["git", "-C", str(d), "commit", "-m", msg],
+        capture_output=True, text=True
+    )
+    if commit_result.returncode != 0:
+        out = commit_result.stderr.strip() or commit_result.stdout.strip()
+        msg_line = out.splitlines()[-1] if out else "unknown error"
+        return False, None, f"commit failed — {msg_line}"
+    sha_result = subprocess.run(
+        ["git", "-C", str(d), "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True
+    )
+    sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
+    return True, sha, None
+
+
+def _wip_message():
+    """Return a WIP commit message with timestamp."""
+    return f"WIP {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
 
 def _sync_one(platform, local_path, remote_path, d):
@@ -287,7 +301,7 @@ def cmd_push(config, base, mode="interactive", dry_run=False, only=None, jobs=No
         return
 
     if mode == "wip":
-        msg = f"WIP {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        msg = _wip_message()
         with _pool(jobs) as pool:
             futures = [pool.submit(_commit_and_push, d, f"{p}/{lp}", msg) for p, lp, d in dirty]
             for f in as_completed(futures):
@@ -321,6 +335,234 @@ def cmd_push(config, base, mode="interactive", dry_run=False, only=None, jobs=No
                 print("  Skipped.")
                 continue
             _commit_and_push(d, label, msg)
+
+
+def cmd_commit(config, base, mode="interactive", dry_run=False, only=None, jobs=None, json_output=False):
+    """Commit dirty repos without pushing."""
+    dirty = [
+        (platform, local_path, d)
+        for platform, local_path, _, d in each_existing_repo(config, base, only=only)
+        if is_dirty(d)
+    ]
+
+    if not dirty:
+        if json_output:
+            print(json.dumps([]))
+        else:
+            print("No dirty repos to commit.")
+        return
+
+    if dry_run:
+        if json_output:
+            print(json.dumps([
+                {"platform": p, "path": lp, "status": "planned", "message": None, "sha": None, "error": None}
+                for p, lp, _ in dirty
+            ]))
+        else:
+            print("Would commit the following dirty repos:")
+            for platform, local_path, _ in dirty:
+                print(f"  {platform}/{local_path}")
+        return
+
+    results = []
+    results_lock = threading.Lock()
+
+    def _commit_task(platform, local_path, d, msg):
+        label = f"{platform}/{local_path}"
+        ok, sha, error = _commit_one(d, msg)
+        entry = {
+            "platform": platform,
+            "path": local_path,
+            "status": "committed" if ok else "failed",
+            "message": msg if ok else None,
+            "sha": sha,
+            "error": None if ok else error,
+        }
+        with results_lock:
+            results.append(entry)
+        if not json_output:
+            if not ok:
+                print(f"{ERR} {label}: {error}")
+            else:
+                print(f"{OK} {label}: committed {sha}")
+
+    if mode == "wip":
+        msg = _wip_message()
+        with _pool(jobs) as pool:
+            futures = [pool.submit(_commit_task, p, lp, d, msg) for p, lp, d in dirty]
+            for f in as_completed(futures):
+                f.result()
+
+    elif mode == "all":
+        if not json_output:
+            print("Dirty repos:")
+            for platform, local_path, _ in dirty:
+                print(f"  {platform}/{local_path}")
+        prompt = "\nCommit message for all repos (blank to abort): "
+        if json_output:
+            # stdout is reserved for the JSON result
+            print(prompt, end="", file=sys.stderr, flush=True)
+            msg = input().strip()
+        else:
+            msg = input(prompt).strip()
+        if not msg:
+            if json_output:
+                print(json.dumps([]))
+            else:
+                print("Aborted.")
+            return
+        with _pool(jobs) as pool:
+            futures = [pool.submit(_commit_task, p, lp, d, msg) for p, lp, d in dirty]
+            for f in as_completed(futures):
+                f.result()
+
+    else:  # interactive — must stay sequential for user input (never --json)
+        for platform, local_path, d in dirty:
+            label = f"{platform}/{local_path}"
+            status = subprocess.run(
+                ["git", "-C", str(d), "status", "--short"],
+                capture_output=True, text=True
+            ).stdout.strip()
+            print(f"\n{label}:")
+            for line in status.splitlines():
+                print(f"  {line}")
+            msg = input("  Commit message (blank to skip): ").strip()
+            if not msg:
+                print("  Skipped.")
+                continue
+            _commit_task(platform, local_path, d, msg)
+
+    if json_output:
+        results.sort(key=lambda r: (r["platform"], r["path"]))
+        print(json.dumps(results))
+
+
+def _merge_precheck(d, target):
+    """Return (status, detail) if the repo should not be merged, else None."""
+    branch = subprocess.run(
+        ["git", "-C", str(d), "symbolic-ref", "--short", "-q", "HEAD"],
+        capture_output=True, text=True
+    )
+    if branch.returncode != 0:
+        return "skipped", "detached HEAD"
+    current = branch.stdout.strip()
+
+    exists = subprocess.run(
+        ["git", "-C", str(d), "rev-parse", "--verify", "-q", f"refs/heads/{target}"],
+        capture_output=True, text=True
+    )
+    if exists.returncode != 0:
+        return "skipped", f"target branch '{target}' not found"
+
+    if target == current:
+        return "up-to-date", ""
+
+    in_progress = subprocess.run(
+        ["git", "-C", str(d), "rev-parse", "--verify", "-q", "MERGE_HEAD"],
+        capture_output=True, text=True
+    )
+    if in_progress.returncode == 0:
+        return "skipped", "merge in progress"
+
+    if is_dirty(d):
+        return "skipped", "dirty working tree"
+
+    contained = subprocess.run(
+        ["git", "-C", str(d), "merge-base", "--is-ancestor", f"refs/heads/{target}", "HEAD"],
+        capture_output=True, text=True
+    )
+    if contained.returncode == 0:
+        return "up-to-date", ""
+    return None
+
+
+def _merge_one(d, target, no_ff=False, squash=False):
+    """Merge target into the current branch of the repo at d.
+
+    Returns (status, detail, conflict_files). Status is one of merged,
+    up-to-date, conflict, skipped, failed.
+    """
+    skip = _merge_precheck(d, target)
+    if skip:
+        return skip[0], skip[1], []
+
+    head_before = _git_out(d, "rev-parse", "HEAD")
+
+    cmd = ["git", "-C", str(d), "merge"]
+    if squash:
+        cmd.append("--squash")
+    if no_ff:
+        cmd.append("--no-ff")
+    cmd.append(target)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        unmerged = (_git_out(d, "diff", "--name-only", "--diff-filter=U") or "").splitlines()
+        if unmerged:
+            return "conflict", f"{len(unmerged)} file(s)", unmerged
+        out = (result.stderr.strip() or result.stdout.strip()).splitlines()
+        return "failed", out[-1] if out else "unknown error", []
+
+    if squash:
+        return "merged", "squashed (staged)", []
+
+    head_after = _git_out(d, "rev-parse", "HEAD")
+    if head_after == head_before:
+        return "up-to-date", "", []
+    parents = (_git_out(d, "rev-list", "--parents", "-n", "1", "HEAD") or "").split()
+    if len(parents) > 2:
+        return "merged", f"commit {head_after[:7]}", []
+    return "merged", "fast-forward", []
+
+
+def _merge_line(status, detail):
+    if status == "up-to-date":
+        return "up to date"
+    if status == "planned":
+        return "would merge"
+    if status == "merged":
+        return detail if detail.startswith("squashed") else f"merged ({detail})"
+    return f"{status}: {detail}"
+
+
+def cmd_merge(config, base, target, no_ff=False, squash=False, dry_run=False, only=None, jobs=None, json_output=False):
+    """Merge a local target branch into each repo's current branch."""
+    repos = list(each_existing_repo(config, base, only=only))
+    strategy = "squash" if squash else ("no-ff" if no_ff else "default")
+    results = []
+    results_lock = threading.Lock()
+
+    def _merge_task(platform, local_path, d):
+        if dry_run:
+            status, detail = _merge_precheck(d, target) or ("planned", "")
+            conflict_files = []
+        else:
+            status, detail, conflict_files = _merge_one(d, target, no_ff=no_ff, squash=squash)
+        entry = {
+            "platform": platform,
+            "path": local_path,
+            "status": status,
+            "strategy": strategy,
+            "detail": detail or None,
+        }
+        if status == "conflict":
+            entry["conflict_files"] = conflict_files
+        with results_lock:
+            results.append(entry)
+        if not json_output:
+            symbol = {"merged": UPD, "up-to-date": OK, "planned": OK, "conflict": ERR, "failed": ERR}.get(status, WARN)
+            _emit([f"{symbol} {platform}/{local_path}: {_merge_line(status, detail)}"])
+
+    with _pool(jobs) as pool:
+        futures = [pool.submit(_merge_task, p, lp, d) for p, lp, _, d in repos]
+        for f in as_completed(futures):
+            f.result()
+
+    if json_output:
+        results.sort(key=lambda r: (r["platform"], r["path"]))
+        print(json.dumps(results))
+    elif not repos:
+        print("No cloned repos found.")
 
 
 AHEAD = f"{_Y}↑{_RST}"
