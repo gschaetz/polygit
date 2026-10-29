@@ -9,7 +9,7 @@ description = "Manage multiple git repos from a single .pgit config file."
 readme = "README.md"
 license = { file = "LICENSE.txt" }
 authors = [{ name = "Gary Schaetz", email = "gary@schaetzkc.com" }]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 keywords = ["git", "repos", "multi-repo", "polygit", "pgit", "devtools"]
 dependencies = [
     "pyyaml>=6.0",
@@ -26,5 +26,5 @@ packages = ["src/polygit"]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.0.3",
 ]
