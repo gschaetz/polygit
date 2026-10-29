@@ -14,6 +14,10 @@ def _isolated_git_config(monkeypatch):
     """Keep the developer's global git config (e.g. merge.ff=only) out of the tests."""
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    # pgit's own commits and merges need an identity; CI runners have none.
+    for role in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{role}_NAME", "T")
+        monkeypatch.setenv(f"GIT_{role}_EMAIL", "t@t.com")
 
 
 # ── parse_remote_url ──────────────────────────────────────────────────────────
