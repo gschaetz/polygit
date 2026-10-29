@@ -166,5 +166,5 @@ If you were using the `sync.sh` predecessor, rename your `repos.yaml` to `.pgit`
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.10+
 - git
