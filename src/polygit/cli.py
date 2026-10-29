@@ -1,7 +1,7 @@
 import sys
 import argparse
 from .config import find_config, load_config, HOSTS
-from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push, cmd_branches
+from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push, cmd_branches, cmd_commit, cmd_merge
 from .repos import cmd_repos
 
 
@@ -54,6 +54,32 @@ def main():
     push_p.add_argument("--only", dest="only_platform", help="Limit to a single platform (e.g. github)")
     _add_jobs(push_p)
 
+    commit_p = sub.add_parser("commit", help="Commit dirty repos (without pushing)")
+    commit_mode_g = commit_p.add_mutually_exclusive_group()
+    commit_mode_g.add_argument("--interactive", dest="commit_mode", action="store_const",
+                               const="interactive", help="Prompt per repo (default)")
+    commit_mode_g.add_argument("--all", dest="commit_mode", action="store_const",
+                               const="all", help="One commit message for all dirty repos")
+    commit_mode_g.add_argument("--wip", dest="commit_mode", action="store_const",
+                               const="wip", help='Auto-commit with "WIP <timestamp>"')
+    commit_p.set_defaults(commit_mode="interactive")
+    commit_p.add_argument("--dry-run", action="store_true",
+                          help="Show the commit plan without committing")
+    commit_p.add_argument("--json", action="store_true",
+                          help="Print commit results as a JSON list")
+    commit_p.add_argument("--only", dest="only_platform", help="Limit to a single platform (e.g. github)")
+    _add_jobs(commit_p)
+
+    merge_p = sub.add_parser("merge", help="Merge a target branch into each repo's current branch")
+    merge_p.add_argument("target", metavar="BRANCH", help="Branch to merge in (e.g. main)")
+    merge_strategy = merge_p.add_mutually_exclusive_group()
+    merge_strategy.add_argument("--no-ff", action="store_true", help="Force a merge commit")
+    merge_strategy.add_argument("--squash", action="store_true", help="Stage the merged changes without committing")
+    merge_p.add_argument("--dry-run", action="store_true", help="Show what would happen without changing repos")
+    merge_p.add_argument("--json", action="store_true", help="Print merge results as a JSON list")
+    merge_p.add_argument("--only", dest="only_platform", help="Limit to a single platform (e.g. github)")
+    _add_jobs(merge_p)
+
     branches_p = sub.add_parser("branches", help="Show current branch and tracking status per repo (as of last fetch)")
     branches_p.add_argument("--json", action="store_true",
                             help="Print branch status for every repo as a JSON list")
@@ -67,6 +93,11 @@ def main():
     if not args.command:
         parser.print_help()
         sys.exit(0)
+
+    # Reject --json in interactive commit mode (before config lookup)
+    if args.command == "commit" and getattr(args, "json", False) and getattr(args, "commit_mode", None) == "interactive":
+        print("Error: --json requires --all or --wip.", file=sys.stderr)
+        sys.exit(2)
 
     config_path = find_config()
     if config_path is None:
@@ -90,6 +121,8 @@ def main():
         "status":   lambda: cmd_status(config, base, json_output=args.json, only=only_platform, jobs=jobs),
         "pull":     lambda: cmd_pull(config, base, dry_run=args.dry_run, only=only_platform, jobs=jobs),
         "push":     lambda: cmd_push(config, base, mode=args.push_mode, dry_run=args.dry_run, only=only_platform, jobs=jobs),
+        "commit":   lambda: cmd_commit(config, base, mode=args.commit_mode, dry_run=args.dry_run, only=only_platform, jobs=jobs, json_output=args.json),
+        "merge":    lambda: cmd_merge(config, base, args.target, no_ff=args.no_ff, squash=args.squash, dry_run=args.dry_run, only=only_platform, jobs=jobs, json_output=args.json),
         "branches": lambda: cmd_branches(config, base, json_output=args.json, only=only_platform, jobs=jobs),
         "repos":    lambda: cmd_repos(config, base, config_path),
     }

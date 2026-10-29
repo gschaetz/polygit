@@ -12,7 +12,9 @@ uv tool install polygit
 pgit sync      # clone missing repos, fetch all
 pgit status    # show repos with uncommitted changes
 pgit pull      # pull all repos, auto-stashing local changes
+pgit commit    # commit dirty repos without pushing
 pgit push      # interactively commit and push dirty repos
+pgit merge     # merge a target branch into each repo
 pgit repos     # discover drift between .pgit and the filesystem
 pgit branches  # show current branch and tracking status per repo
 ```
@@ -41,6 +43,35 @@ pgit branches --only github
 ```
 
 Passing an unknown platform prints an error to stderr and exits 1.
+
+
+## commit
+
+`pgit commit` commits dirty repos without pushing to remotes:
+
+```bash
+pgit commit                # prompt for a message per repo (default)
+pgit commit --all          # one message for all dirty repos
+pgit commit --wip          # auto-commit with "WIP <timestamp>"
+pgit commit --dry-run      # list dirty repos that would be committed
+pgit commit --wip --json   # emit JSON array of commit results
+```
+
+Note: `--json` is available with `--all` or `--wip` modes.
+
+## merge
+
+`pgit merge <branch>` merges a target branch into the current branch of each cloned repo:
+
+```bash
+pgit merge main            # merge local 'main' into current branch of each repo
+pgit merge main --no-ff    # force a merge commit
+pgit merge main --squash   # stage the merged changes without committing
+pgit merge main --dry-run  # list repos that would be merged or skipped; changes nothing
+pgit merge main --json     # emit JSON array of merge results
+```
+
+`pgit merge` acts on local branches and does not fetch from remotes — run `pgit sync` first if you need updated remote branches. Repos with dirty working trees, detached HEADs, or missing target branches are skipped safely with a clear reason.
 
 ## Configuration
 
