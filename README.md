@@ -4,6 +4,7 @@ Manage multiple git repos from a single `.pgit` config file.
 
 ```bash
 uv tool install polygit
+uv tool upgrade polygit    # later, to get the latest release
 ```
 
 ## Usage
