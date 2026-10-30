@@ -1053,3 +1053,125 @@ def cmd_review(config, base, mode="interactive", base_branch=None, dry_run=False
     if json_output:
         results.sort(key=lambda r: (r["platform"], r["path"]))
         print(json.dumps(results))
+
+
+def valid_branch_name(name):
+    """True if git accepts name as a branch name. Needs no repo."""
+    result = subprocess.run(["git", "check-ref-format", "--branch", name], capture_output=True, text=True)
+    return result.returncode == 0
+
+
+def _operation_in_progress(d):
+    """True if a merge, cherry-pick or rebase is in progress in the repo at d."""
+    for name in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "rebase-merge", "rebase-apply"):
+        path = _git_out(d, "rev-parse", "--git-path", name)
+        if path and (Path(d) / path).exists():
+            return True
+    return False
+
+
+def _current_branch(d):
+    """Name of the checked-out branch, or None when detached or the repo has no commits."""
+    if _git_out(d, "rev-parse", "--verify", "-q", "HEAD") is None:
+        return None
+    return _git_out(d, "symbolic-ref", "--short", "-q", "HEAD")
+
+
+def _checkout_precheck(d, branch, create, start):
+    """Return (status, detail) if the repo should not be changed, else None."""
+    if _git_out(d, "rev-parse", "--verify", "-q", "HEAD") is None:
+        return "skipped", "no commits yet"
+    current = _git_out(d, "symbolic-ref", "--short", "-q", "HEAD")
+    if current is None:
+        return "skipped", "detached HEAD"
+    if current == branch:
+        return "up-to-date", ""
+    if _operation_in_progress(d):
+        return "skipped", "operation in progress"
+
+    # Creating at the current HEAD leaves files alone, so a dirty tree is safe there.
+    if (not create or start) and is_dirty(d):
+        return "skipped", "dirty working tree"
+
+    exists = _git_out(d, "rev-parse", "--verify", "-q", f"refs/heads/{branch}") is not None
+    if create:
+        if exists:
+            return "skipped", f"branch '{branch}' already exists"
+        if start and _git_out(d, "rev-parse", "--verify", "-q", f"{start}^{{commit}}") is None:
+            return "skipped", f"start point '{start}' not found"
+    elif not exists:
+        return "skipped", f"branch '{branch}' not found"
+    return None
+
+
+def _checkout_one(d, branch, create, start):
+    """Switch to or create branch in the repo at d. Returns (status, detail, previous)."""
+    previous = _current_branch(d)
+    skip = _checkout_precheck(d, branch, create, start)
+    if skip:
+        return skip[0], skip[1], previous
+
+    cmd = ["git", "-C", str(d), "checkout"]
+    if create:
+        cmd += ["-b", branch] + ([start] if start else [])
+    else:
+        cmd += [branch, "--"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        out = (result.stderr.strip() or result.stdout.strip()).splitlines()
+        return "failed", out[-1] if out else "unknown error", previous
+    return ("created" if create else "switched"), "", previous
+
+
+def _checkout_line(entry, start):
+    status, branch, previous, detail = entry["status"], entry["branch"], entry["previous"], entry["detail"]
+    if status == "up-to-date":
+        return f"already on '{branch}'"
+    if status == "planned":
+        if entry["action"] == "create":
+            return f"would create '{branch}'" + (f" from '{start}'" if start else "")
+        return f"would switch to '{branch}'"
+    if status == "created":
+        return f"created '{branch}' from '{start or previous}'"
+    if status == "switched":
+        return f"switched '{previous}' -> '{branch}'"
+    return f"{status}: {detail}"
+
+
+def cmd_checkout(config, base, branch, create=False, start=None, dry_run=False, only=None, jobs=None, json_output=False):
+    """Switch every cloned repo to branch, or create it there with create=True."""
+    repos = list(each_existing_repo(config, base, only=only))
+    results = []
+    results_lock = threading.Lock()
+
+    def _checkout_task(platform, local_path, d):
+        if dry_run:
+            previous = _current_branch(d)
+            status, detail = _checkout_precheck(d, branch, create, start) or ("planned", "")
+        else:
+            status, detail, previous = _checkout_one(d, branch, create, start)
+        entry = {
+            "platform": platform,
+            "path": local_path,
+            "status": status,
+            "action": "create" if create else "switch",
+            "branch": branch,
+            "previous": previous,
+            "detail": detail or None,
+        }
+        with results_lock:
+            results.append(entry)
+        if not json_output:
+            symbol = {"switched": UPD, "created": UPD, "up-to-date": OK, "planned": OK, "failed": ERR}.get(status, WARN)
+            _emit([f"{symbol} {platform}/{local_path}: {_checkout_line(entry, start)}"])
+
+    with _pool(jobs) as pool:
+        futures = [pool.submit(_checkout_task, p, lp, d) for p, lp, _, d in repos]
+        for f in as_completed(futures):
+            f.result()
+
+    if json_output:
+        results.sort(key=lambda r: (r["platform"], r["path"]))
+        print(json.dumps(results))
+    elif not repos:
+        print("No cloned repos found.")

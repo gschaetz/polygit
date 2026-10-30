@@ -16,6 +16,7 @@ pgit pull      # pull all repos, auto-stashing local changes
 pgit commit    # commit dirty repos without pushing
 pgit push      # interactively commit and push dirty repos
 pgit merge     # merge a target branch into each repo
+pgit checkout  # switch every repo to a branch, or create it with -b
 pgit repos     # discover drift between .pgit and the filesystem
 pgit branches  # show current branch and tracking status per repo
 ```
@@ -73,6 +74,24 @@ pgit merge main --json     # emit JSON array of merge results
 ```
 
 `pgit merge` acts on local branches and does not fetch from remotes — run `pgit sync` first if you need updated remote branches. Repos with dirty working trees, detached HEADs, or missing target branches are skipped safely with a clear reason.
+
+## checkout
+
+`pgit checkout <branch>` switches every cloned repo to an existing local branch; with `-b` it creates the branch everywhere:
+
+```bash
+pgit checkout main                         # switch every repo to local 'main'
+pgit checkout -b feat/login                # create 'feat/login' at each repo's current HEAD
+pgit checkout -b feat/login --from origin/main   # create it at origin/main instead
+pgit checkout main --dry-run               # list what would happen; changes nothing
+pgit checkout -b feat/login --json         # emit JSON array of results
+```
+
+Local work is never overwritten. Switching to an existing branch, or creating from `--from`, skips repos with uncommitted changes (untracked files count). Plain `-b` only adds a branch at the current commit, so it works on a dirty repo and your changes come along, as with `git checkout -b`.
+
+Each repo is reported as `switched`, `created`, `up-to-date` or `failed`, or `skipped` with a reason: dirty working tree, detached HEAD, no commits yet, merge/rebase/cherry-pick in progress, branch not found (without `-b`), branch already exists (with `-b`), or start point not found. A skip in one repo never stops the others, and re-running is safe — repos already on the branch are reported as up to date.
+
+`pgit checkout` reads local refs only and never fetches, so a branch that exists only on the remote counts as not found; run `pgit sync` first and use `-b <branch> --from origin/<branch>` to start from it. `--from` is only valid with `-b`.
 
 ## Configuration
 

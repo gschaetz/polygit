@@ -6,7 +6,7 @@ import pytest
 from pathlib import Path
 from polygit.config import find_config, load_config, write_config
 from polygit.repos import parse_remote_url, del_nested, _add_to_config
-from polygit.repo import walk, _pull_one, cmd_push, cmd_status, cmd_pull, cmd_sync, cmd_branches, cmd_commit, cmd_merge, cmd_review
+from polygit.repo import walk, _pull_one, cmd_push, cmd_status, cmd_pull, cmd_sync, cmd_branches, cmd_commit, cmd_merge, cmd_review, cmd_checkout
 
 
 @pytest.fixture(autouse=True)
@@ -1432,3 +1432,322 @@ def test_version_flag(capsys, monkeypatch):
     from importlib.metadata import version
     assert _run_main(monkeypatch, "--version") == 0
     assert capsys.readouterr().out.strip() == f"pgit {version('polygit')}"
+
+
+# ── checkout ──────────────────────────────────────────────────────────────────
+
+def _co_repo(tmp_path, **kw):
+    """Clean clone on main (pushed), no extra branches."""
+    return _make_review_repo(tmp_path, branch="main", ahead=0, remote_url=None, **kw)
+
+
+def _branch_of(d):
+    return subprocess.run(["git", "-C", str(d), "symbolic-ref", "--short", "-q", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def _branches(d):
+    return subprocess.run(["git", "-C", str(d), "branch", "--format=%(refname:short)"],
+                          capture_output=True, text=True).stdout.split()
+
+
+def _co_json(capsys):
+    return {e["path"]: e for e in json.loads(capsys.readouterr().out)}
+
+
+def test_checkout_switches_to_existing_branch(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    _git(d, "checkout", "-q", "-b", "feat/x")
+    cmd_checkout(CFG, tmp_path, "main", json_output=True)
+    entry = _co_json(capsys)["r"]
+    assert (entry["status"], entry["action"], entry["previous"], entry["branch"]) == ("switched", "switch", "feat/x", "main")
+    assert entry["detail"] is None
+    assert _branch_of(d) == "main"
+
+
+def test_checkout_text_lines(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    _git(d, "checkout", "-q", "-b", "other")
+    cmd_checkout(CFG, tmp_path, "main")
+    assert "github/r: switched 'other' -> 'main'" in capsys.readouterr().out
+    cmd_checkout(CFG, tmp_path, "main")
+    assert "github/r: already on 'main'" in capsys.readouterr().out
+    cmd_checkout(CFG, tmp_path, "nope")
+    assert "github/r: skipped: branch 'nope' not found" in capsys.readouterr().out
+    cmd_checkout(CFG, tmp_path, "feat", create=True)
+    assert "github/r: created 'feat' from 'main'" in capsys.readouterr().out
+
+
+def test_checkout_already_on_branch_even_when_dirty(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    (d / "wip.txt").write_text("x")
+    cmd_checkout(CFG, tmp_path, "main", json_output=True)
+    assert _co_json(capsys)["r"]["status"] == "up-to-date"
+    assert (d / "wip.txt").exists()
+
+
+def test_checkout_missing_branch_skipped(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    cmd_checkout(CFG, tmp_path, "nope", json_output=True)
+    entry = _co_json(capsys)["r"]
+    assert (entry["status"], entry["detail"]) == ("skipped", "branch 'nope' not found")
+    assert _branch_of(d) == "main"
+
+
+def test_checkout_remote_only_branch_is_not_found_and_not_created(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    _git(tmp_path / "r-seed", "push", "-q", "origin", "HEAD:refs/heads/remote-only")
+    _git(d, "fetch", "-q")
+    assert "origin/remote-only" in subprocess.run(["git", "-C", str(d), "branch", "-r"],
+                                                  capture_output=True, text=True).stdout
+    cmd_checkout(CFG, tmp_path, "remote-only", json_output=True)
+    assert _co_json(capsys)["r"]["detail"] == "branch 'remote-only' not found"
+    assert "remote-only" not in _branches(d)
+    assert _branch_of(d) == "main"
+
+
+def test_checkout_create_from_head(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    cmd_checkout(CFG, tmp_path, "feat", create=True, json_output=True)
+    entry = _co_json(capsys)["r"]
+    assert (entry["status"], entry["action"], entry["previous"]) == ("created", "create", "main")
+    assert _branch_of(d) == "feat"
+    assert _git_rev(d, "feat") == _git_rev(d, "main")
+
+
+def test_checkout_create_from_ref(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    origin_main = _git_rev(d, "origin/main")
+    _commit(d, "local-only")                          # main is now ahead of origin/main
+    cmd_checkout(CFG, tmp_path, "feat", create=True, start="origin/main", json_output=True)
+    assert _co_json(capsys)["r"]["status"] == "created"
+    assert _git_rev(d, "feat") == origin_main
+    assert _git_rev(d, "main") != origin_main
+
+
+def test_checkout_create_existing_branch_skipped_and_not_moved(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    _git(d, "branch", "feat")
+    _commit(d, "advance")                             # main moves past feat
+    before = _git_rev(d, "feat")
+    cmd_checkout(CFG, tmp_path, "feat", create=True, json_output=True)
+    entry = _co_json(capsys)["r"]
+    assert (entry["status"], entry["detail"]) == ("skipped", "branch 'feat' already exists")
+    assert _git_rev(d, "feat") == before
+    assert _branch_of(d) == "main"
+
+
+def test_checkout_create_when_already_on_it_is_up_to_date(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    _git(d, "checkout", "-q", "-b", "feat")
+    cmd_checkout(CFG, tmp_path, "feat", create=True, json_output=True)
+    assert _co_json(capsys)["r"]["status"] == "up-to-date"
+
+
+def test_checkout_missing_start_point_skipped(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    cmd_checkout(CFG, tmp_path, "feat", create=True, start="release", json_output=True)
+    entry = _co_json(capsys)["r"]
+    assert (entry["status"], entry["detail"]) == ("skipped", "start point 'release' not found")
+    assert "feat" not in _branches(d)
+
+
+def test_checkout_accepts_tag_as_start_point(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    _git(d, "tag", "v1")
+    _commit(d, "later")
+    cmd_checkout(CFG, tmp_path, "from-tag", create=True, start="v1", json_output=True)
+    assert _co_json(capsys)["r"]["status"] == "created"
+    assert _git_rev(d, "from-tag") == _git_rev(d, "v1")
+
+
+def test_checkout_dirty_switch_skipped_and_changes_survive(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    _git(d, "branch", "other")
+    (d / "init").write_text("edited")                 # tracked file modified
+    cmd_checkout(CFG, tmp_path, "other", json_output=True)
+    entry = _co_json(capsys)["r"]
+    assert (entry["status"], entry["detail"]) == ("skipped", "dirty working tree")
+    assert _branch_of(d) == "main"
+    assert (d / "init").read_text() == "edited"
+
+
+def test_checkout_untracked_file_counts_as_dirty(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    _git(d, "branch", "other")
+    (d / "scratch.txt").write_text("x")
+    cmd_checkout(CFG, tmp_path, "other", json_output=True)
+    assert _co_json(capsys)["r"]["detail"] == "dirty working tree"
+    assert _branch_of(d) == "main"
+
+
+def test_checkout_dirty_create_from_ref_skipped(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    (d / "init").write_text("edited")
+    cmd_checkout(CFG, tmp_path, "feat", create=True, start="origin/main", json_output=True)
+    assert _co_json(capsys)["r"]["detail"] == "dirty working tree"
+    assert "feat" not in _branches(d)
+    assert (d / "init").read_text() == "edited"
+
+
+def test_checkout_dirty_plain_create_keeps_uncommitted_work(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    (d / "init").write_text("edited")
+    (d / "scratch.txt").write_text("x")
+    cmd_checkout(CFG, tmp_path, "feat", create=True, json_output=True)
+    assert _co_json(capsys)["r"]["status"] == "created"
+    assert _branch_of(d) == "feat"
+    assert (d / "init").read_text() == "edited"
+    assert (d / "scratch.txt").read_text() == "x"
+
+
+def test_checkout_detached_head_skipped(capsys, tmp_path):
+    d = _co_repo(tmp_path)
+    _git(d, "branch", "other")
+    _git(d, "checkout", "-q", "--detach")
+    cmd_checkout(CFG, tmp_path, "other", json_output=True)
+    entry = _co_json(capsys)["r"]
+    assert (entry["status"], entry["detail"], entry["previous"]) == ("skipped", "detached HEAD", None)
+    assert _branch_of(d) == ""
+
+
+def test_checkout_unborn_repo_skipped(capsys, tmp_path):
+    d = tmp_path / "github" / "r"
+    d.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(d)], check=True)
+    cmd_checkout(CFG, tmp_path, "feat", create=True, json_output=True)
+    entry = _co_json(capsys)["r"]
+    assert (entry["status"], entry["detail"], entry["previous"]) == ("skipped", "no commits yet", None)
+
+
+@pytest.mark.parametrize("marker, is_dir", [
+    ("MERGE_HEAD", False), ("CHERRY_PICK_HEAD", False), ("rebase-merge", True), ("rebase-apply", True),
+])
+def test_checkout_operation_in_progress_skipped(capsys, tmp_path, marker, is_dir):
+    d = _co_repo(tmp_path)
+    _git(d, "branch", "other")
+    target = d / ".git" / marker
+    if is_dir:
+        target.mkdir()
+    else:
+        target.write_text(_git_rev(d, "HEAD") + "\n")
+    cmd_checkout(CFG, tmp_path, "other", json_output=True)
+    entry = _co_json(capsys)["r"]
+    assert (entry["status"], entry["detail"]) == ("skipped", "operation in progress")
+    assert _branch_of(d) == "main"
+
+
+def test_checkout_git_failure_is_reported_and_others_continue(capsys, tmp_path):
+    bad = _co_repo(tmp_path, rel="bad")
+    good = _co_repo(tmp_path, rel="good")
+    _git(bad, "branch", "a")                          # branch 'a' blocks creating 'a/b'
+    cmd_checkout({"github": {"bad": None, "good": None}}, tmp_path, "a/b", create=True, json_output=True)
+    entries = _co_json(capsys)
+    assert entries["bad"]["status"] == "failed" and entries["bad"]["detail"]
+    assert entries["good"]["status"] == "created"
+    assert _branch_of(good) == "a/b"
+
+
+def test_checkout_dry_run_changes_nothing(capsys, tmp_path):
+    ok = _co_repo(tmp_path, rel="ok")
+    dirty = _co_repo(tmp_path, rel="dirty")
+    (dirty / "init").write_text("edited")
+    cfg = {"github": {"ok": None, "dirty": None}}
+    cmd_checkout(cfg, tmp_path, "feat", create=True, start="origin/main", dry_run=True, json_output=True)
+    entries = _co_json(capsys)
+    assert (entries["ok"]["status"], entries["ok"]["action"]) == ("planned", "create")
+    assert entries["dirty"]["status"] == "skipped" and entries["dirty"]["detail"] == "dirty working tree"
+    for d in (ok, dirty):
+        assert _branch_of(d) == "main" and "feat" not in _branches(d)
+    assert (dirty / "init").read_text() == "edited"
+
+
+def test_checkout_dry_run_text(capsys, tmp_path):
+    _co_repo(tmp_path)
+    cmd_checkout(CFG, tmp_path, "feat", create=True, start="origin/main", dry_run=True)
+    assert "would create 'feat' from 'origin/main'" in capsys.readouterr().out
+    cmd_checkout(CFG, tmp_path, "main", dry_run=True)
+    assert "already on 'main'" in capsys.readouterr().out
+
+
+def test_checkout_is_idempotent(capsys, tmp_path):
+    for n in ("a", "b"):
+        _co_repo(tmp_path, rel=n)
+    cfg = {"github": {"a": None, "b": None}}
+    cmd_checkout(cfg, tmp_path, "feat", create=True, json_output=True)
+    assert {e["status"] for e in _co_json(capsys).values()} == {"created"}
+    cmd_checkout(cfg, tmp_path, "feat", create=True, json_output=True)
+    assert {e["status"] for e in _co_json(capsys).values()} == {"up-to-date"}
+
+
+def test_checkout_json_sorted_and_only_stdout(capsys, tmp_path):
+    for n in ("b", "a"):
+        _co_repo(tmp_path, rel=n)
+    cmd_checkout({"github": {"b": None, "a": None}}, tmp_path, "feat", create=True, json_output=True)
+    entries = json.loads(capsys.readouterr().out)     # raises if anything but the array is on stdout
+    assert [e["path"] for e in entries] == ["a", "b"]
+    assert set(entries[0]) == {"platform", "path", "status", "action", "branch", "previous", "detail"}
+
+
+def test_checkout_no_cloned_repos(capsys, tmp_path):
+    cmd_checkout(CFG, tmp_path, "main")
+    assert "No cloned repos found." in capsys.readouterr().out
+    cmd_checkout(CFG, tmp_path, "main", json_output=True)
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_checkout_only_filters_platform(capsys, tmp_path):
+    gh = _co_repo(tmp_path, rel="h", platform="github")
+    gl = _co_repo(tmp_path, rel="l", platform="gitlab")
+    cfg = {"github": {"h": None}, "gitlab": {"l": None}}
+    cmd_checkout(cfg, tmp_path, "feat", create=True, only="github", json_output=True)
+    assert [e["platform"] for e in json.loads(capsys.readouterr().out)] == ["github"]
+    assert _branch_of(gh) == "feat" and _branch_of(gl) == "main"
+
+
+@pytest.mark.parametrize("jobs", [1, 2])
+def test_checkout_jobs_limits_concurrency(tmp_path, monkeypatch, jobs):
+    import threading
+    import time
+    import polygit.repo as repo_mod
+    names = ["r1", "r2", "r3", "r4"]
+    for n in names:
+        _co_repo(tmp_path, rel=n)
+    lock = threading.Lock()
+    state = {"now": 0, "peak": 0, "calls": 0}
+
+    def slow(d, branch, create, start):
+        with lock:
+            state["now"] += 1
+            state["calls"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+        time.sleep(0.05)
+        with lock:
+            state["now"] -= 1
+        return "created", "", "main"
+
+    monkeypatch.setattr(repo_mod, "_checkout_one", slow)
+    cmd_checkout({"github": {n: None for n in names}}, tmp_path, "feat", create=True, jobs=jobs)
+    assert state["calls"] == 4 and state["peak"] <= jobs
+
+
+def test_checkout_cli_from_requires_create(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert _run_main(monkeypatch, "checkout", "feat", "--from", "main") == 2
+    assert "--from requires -b" in capsys.readouterr().err
+
+
+def test_checkout_cli_invalid_branch_name(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert _run_main(monkeypatch, "checkout", "-b", "bad..name") == 2
+    assert "not a valid branch name" in capsys.readouterr().err
+
+
+def test_checkout_cli_requires_branch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert _run_main(monkeypatch, "checkout") == 2
+
+
+def test_checkout_listed_in_help(capsys, monkeypatch):
+    assert _run_main(monkeypatch, "--help") == 0
+    assert "checkout" in capsys.readouterr().out

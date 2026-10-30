@@ -2,7 +2,7 @@ import sys
 import argparse
 from importlib.metadata import version
 from .config import find_config, load_config, HOSTS
-from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push, cmd_branches, cmd_commit, cmd_merge, cmd_review
+from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push, cmd_branches, cmd_commit, cmd_merge, cmd_review, cmd_checkout, valid_branch_name
 from .repos import cmd_repos
 
 
@@ -98,6 +98,16 @@ def main():
     review_p.add_argument("--only", dest="only_platform", help="Limit to a single platform (e.g. github)")
     _add_jobs(review_p)
 
+    checkout_p = sub.add_parser("checkout", help="Switch every repo to a branch, or create it with -b")
+    checkout_p.add_argument("branch", metavar="BRANCH", help="Local branch to switch to (or create with -b)")
+    checkout_p.add_argument("-b", dest="create", action="store_true", help="Create the branch instead of switching to it")
+    checkout_p.add_argument("--from", dest="start", metavar="REF",
+                            help="With -b, create the branch at this ref instead of the current HEAD")
+    checkout_p.add_argument("--dry-run", action="store_true", help="Show what would happen without changing repos")
+    checkout_p.add_argument("--json", action="store_true", help="Print checkout results as a JSON list")
+    checkout_p.add_argument("--only", dest="only_platform", help="Limit to a single platform (e.g. github)")
+    _add_jobs(checkout_p)
+
     branches_p = sub.add_parser("branches", help="Show current branch and tracking status per repo (as of last fetch)")
     branches_p.add_argument("--json", action="store_true",
                             help="Print branch status for every repo as a JSON list")
@@ -121,6 +131,15 @@ def main():
     if args.command == "review" and getattr(args, "json", False) and getattr(args, "review_mode", None) == "interactive":
         print("Error: --json requires --all or --auto.", file=sys.stderr)
         sys.exit(2)
+
+    # Reject bad checkout arguments (before config lookup)
+    if args.command == "checkout":
+        if args.start and not args.create:
+            print("Error: --from requires -b.", file=sys.stderr)
+            sys.exit(2)
+        if not valid_branch_name(args.branch):
+            print(f"Error: '{args.branch}' is not a valid branch name.", file=sys.stderr)
+            sys.exit(2)
 
     config_path = find_config()
     if config_path is None:
@@ -147,6 +166,7 @@ def main():
         "commit":   lambda: cmd_commit(config, base, mode=args.commit_mode, dry_run=args.dry_run, only=only_platform, jobs=jobs, json_output=args.json),
         "merge":    lambda: cmd_merge(config, base, args.target, no_ff=args.no_ff, squash=args.squash, dry_run=args.dry_run, only=only_platform, jobs=jobs, json_output=args.json),
         "review":   lambda: cmd_review(config, base, mode=args.review_mode, base_branch=args.review_base, dry_run=args.dry_run, only=only_platform, jobs=jobs, json_output=args.json),
+        "checkout": lambda: cmd_checkout(config, base, args.branch, create=args.create, start=args.start, dry_run=args.dry_run, only=only_platform, jobs=jobs, json_output=args.json),
         "branches": lambda: cmd_branches(config, base, json_output=args.json, only=only_platform, jobs=jobs),
         "repos":    lambda: cmd_repos(config, base, config_path),
     }
