@@ -1352,14 +1352,16 @@ def test_review_api_failure_reports_body_and_continues(capsys, tmp_path, monkeyp
     def handler(req):
         if "/o/a/" in req.full_url:
             raise urllib.error.HTTPError(req.full_url, 422, "Unprocessable Entity", {},
-                                         io.BytesIO(b'{"message": "A pull request already exists"}'))
+                                         io.BytesIO(b'{"message": "Validation Failed", "errors": [{"resource": "PullRequest", '
+                                                     b'"code": "custom", "message": "A pull request already exists for o:feat/auth."}]}'))
         return _FakeResp(_OK_BODY)
 
     _mock_urlopen(monkeypatch, handler)
     cmd_review({"github": {"a": None, "b": None}}, tmp_path, mode="auto", json_output=True)
     a, b = _json_out(capsys)
     assert a["path"] == "a" and a["status"] == "failed"
-    assert "422" in a["error"] and "already exists" in a["error"]
+    assert "422" in a["error"] and "Validation Failed" in a["error"]
+    assert "A pull request already exists" in a["error"]
     assert a["url"] == "https://github.com/o/a/compare/main...feat/auth?expand=1"
     assert b["path"] == "b" and b["status"] == "created"
 
@@ -1407,3 +1409,20 @@ def test_review_cli_json_requires_non_interactive_mode(capsys, tmp_path, monkeyp
     monkeypatch.chdir(tmp_path)
     assert _run_main(monkeypatch, "review", "--json") == 2
     assert "--json requires --all or --auto" in capsys.readouterr().err
+
+
+def test_review_gitlab_failure_reports_message_list(capsys, tmp_path, monkeypatch):
+    import io
+    import urllib.error
+    _make_review_repo(tmp_path, platform="gitlab", remote_url="git@gitlab.com:g/r.git")
+    monkeypatch.setenv("GITLAB_TOKEN", "tok")
+
+    def handler(req):
+        raise urllib.error.HTTPError(req.full_url, 409, "Conflict", {},
+                                     io.BytesIO(b'{"message": ["Another open merge request already exists for this source branch: !1"]}'))
+
+    _mock_urlopen(monkeypatch, handler)
+    cmd_review({"gitlab": {"r": None}}, tmp_path, mode="auto", json_output=True)
+    entry = _json_out(capsys)[0]
+    assert entry["status"] == "failed"
+    assert "409" in entry["error"] and "Another open merge request already exists" in entry["error"]

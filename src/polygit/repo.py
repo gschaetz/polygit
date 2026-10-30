@@ -726,6 +726,34 @@ def _resolve_base(d, remote, base_arg):
     return None
 
 
+def _api_error_message(err):
+    """Readable message from an HTTPError body.
+
+    GitHub puts the useful detail in errors[].message (the top-level message is
+    just "Validation Failed"); GitLab's message can be a string, list or dict.
+    """
+    body = err.read().decode("utf-8", errors="replace")
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return body
+    if not isinstance(parsed, dict):
+        return body
+    parts = []
+    top = parsed.get("message") or parsed.get("error")
+    if isinstance(top, list):
+        parts.extend(str(t) for t in top)
+    elif top:
+        parts.append(str(top))
+    errors = parsed.get("errors")
+    if isinstance(errors, list):
+        for item in errors:
+            detail = item.get("message") if isinstance(item, dict) else item
+            if detail:
+                parts.append(str(detail))
+    return "; ".join(parts) or body
+
+
 def _github_create_pr(token, owner, repo, title, body, head, base):
     """Create a GitHub PR via REST API; return the PR URL or raise."""
     url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
@@ -739,15 +767,7 @@ def _github_create_pr(token, owner, repo, title, body, head, base):
             result = json.loads(resp.read().decode("utf-8"))
         return result.get("html_url")
     except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        msg = body
-        try:
-            parsed = json.loads(body)
-            if isinstance(parsed, dict):
-                msg = parsed.get("message") or parsed.get("error") or body
-        except (ValueError, json.JSONDecodeError):
-            pass
-        raise RuntimeError(f"GitHub API error {e.code}: {msg}") from e
+        raise RuntimeError(f"GitHub API error {e.code}: {_api_error_message(e)}") from e
 
 
 def _gitlab_create_mr(token, project_path, title, body, source_branch, target_branch):
@@ -767,15 +787,7 @@ def _gitlab_create_mr(token, project_path, title, body, source_branch, target_br
             result = json.loads(resp.read().decode("utf-8"))
         return result.get("web_url")
     except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        msg = body
-        try:
-            parsed = json.loads(body)
-            if isinstance(parsed, dict):
-                msg = parsed.get("message") or parsed.get("error") or body
-        except (ValueError, json.JSONDecodeError):
-            pass
-        raise RuntimeError(f"GitLab API error {e.code}: {msg}") from e
+        raise RuntimeError(f"GitLab API error {e.code}: {_api_error_message(e)}") from e
 
 
 def _fallback_url(platform, remote_url, head, base):
