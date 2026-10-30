@@ -1426,3 +1426,9 @@ def test_review_gitlab_failure_reports_message_list(capsys, tmp_path, monkeypatc
     entry = _json_out(capsys)[0]
     assert entry["status"] == "failed"
     assert "409" in entry["error"] and "Another open merge request already exists" in entry["error"]
+
+
+def test_version_flag(capsys, monkeypatch):
+    from importlib.metadata import version
+    assert _run_main(monkeypatch, "--version") == 0
+    assert capsys.readouterr().out.strip() == f"pgit {version('polygit')}"

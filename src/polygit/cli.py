@@ -1,5 +1,6 @@
 import sys
 import argparse
+from importlib.metadata import version
 from .config import find_config, load_config, HOSTS
 from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push, cmd_branches, cmd_commit, cmd_merge, cmd_review
 from .repos import cmd_repos
@@ -25,6 +26,7 @@ def main():
         prog="pgit",
         description="Manage multiple git repos defined in a .pgit config file."
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {version('polygit')}")
     sub = parser.add_subparsers(dest="command", metavar="command")
 
     sync_p = sub.add_parser("sync",   help="Clone missing repos and fetch all")
