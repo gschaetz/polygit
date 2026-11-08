@@ -10,3 +10,5 @@ context: |
 rules:
   tasks:
     - Include tests in tests/test_polygit.py for every new scenario, and update README.md for user-visible changes
+    - Write each `Verify:` line as a literal shell command plus its exact expected output or exit status (for example "`pgit search zzzz` prints nothing and exits 0"), not a description like "works correctly"
+    - Group tasks into sections that can be applied, checked, and committed on their own, and end each section with a task that runs the real CLI path for that section
