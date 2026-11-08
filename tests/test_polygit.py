@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 import pytest
 from pathlib import Path
 from polygit.config import find_config, load_config, write_config
@@ -1883,4 +1884,162 @@ def test_search_argument_errors_exit_2_before_config(monkeypatch, tmp_path, args
     # No .pgit here: argument errors must be reported before the config lookup.
     with pytest.raises(SystemExit) as exc:
         _run_search(monkeypatch, tmp_path, *args)
+    assert exc.value.code == 2
+
+
+# ── log ───────────────────────────────────────────────────────────────────────
+
+def _log_commit(d, author, date, subject):
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": author, "GIT_AUTHOR_EMAIL": f"{author.lower()}@example.com",
+        "GIT_COMMITTER_NAME": author, "GIT_COMMITTER_EMAIL": f"{author.lower()}@example.com",
+        "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date,
+    }
+    subprocess.run(["git", "-C", str(d), "commit", "-q", "--allow-empty", "-m", subject],
+                   check=True, env=env)
+
+
+def _log_fixture(tmp_path):
+    """github/a (a1 Jan 1, a2 Jan 3 by Ann), github/b (b1 Jan 2 by Bob), gitlab/c (no commits)."""
+    for rel in ("github/a", "github/b", "gitlab/c"):
+        (tmp_path / rel).mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(tmp_path / rel)], check=True)
+    (tmp_path / ".pgit").write_text("github:\n  a:\n  b:\ngitlab:\n  c:\n")
+    _log_commit(tmp_path / "github/a", "Ann", "2026-01-01T10:00:00Z", "a1")
+    _log_commit(tmp_path / "github/b", "Bob", "2026-01-02T10:00:00Z", "b1")
+    _log_commit(tmp_path / "github/a", "Ann", "2026-01-03T10:00:00Z", "a2")
+
+
+def _run_log(monkeypatch, tmp_path, *args):
+    import sys
+    from polygit.cli import main
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["pgit", "log", *args])
+    main()
+
+
+def _log_json(capsys, monkeypatch, tmp_path, *args):
+    _run_log(monkeypatch, tmp_path, *args, "--json")
+    return json.loads(capsys.readouterr().out)
+
+
+def _subjects(commits):
+    return [c["subject"] for c in commits]
+
+
+def test_log_orders_commits_across_repos(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    assert _subjects(_log_json(capsys, monkeypatch, tmp_path)) == ["a2", "b1", "a1"]
+
+
+def test_log_equal_dates_tie_break_by_path_then_hash(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    _log_commit(tmp_path / "github/b", "Bob", "2026-01-03T10:00:00Z", "b2")
+    commits = _log_json(capsys, monkeypatch, tmp_path)
+    assert _subjects(commits)[:2] == ["a2", "b2"]
+    _log_commit(tmp_path / "github/a", "Ann", "2026-01-03T10:00:00Z", "a3")
+    same = [c for c in _log_json(capsys, monkeypatch, tmp_path) if c["date"].startswith("2026-01-03")]
+    a_hashes = [c["hash"] for c in same if c["name"] == "a"]
+    assert a_hashes == sorted(a_hashes)
+
+
+def test_log_repo_without_commits_is_skipped(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    commits = _log_json(capsys, monkeypatch, tmp_path)
+    assert "c" not in {c["name"] for c in commits}
+
+
+def test_log_uncloned_repo_is_skipped(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    (tmp_path / ".pgit").write_text("github:\n  a:\n  b:\n  missing:\ngitlab:\n  c:\n")
+    assert _subjects(_log_json(capsys, monkeypatch, tmp_path)) == ["a2", "b1", "a1"]
+
+
+def test_log_does_not_fetch(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    upstream = tmp_path / "upstream"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "github/a"), str(upstream)], check=True)
+    _log_commit(upstream, "Zed", "2026-02-01T10:00:00Z", "remote-only")
+    subprocess.run(["git", "-C", str(tmp_path / "github/b"), "remote", "add", "origin", str(upstream)], check=True)
+    assert "remote-only" not in _subjects(_log_json(capsys, monkeypatch, tmp_path))
+
+
+def test_log_limit(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    assert _subjects(_log_json(capsys, monkeypatch, tmp_path, "--limit", "2")) == ["a2", "b1"]
+
+
+def test_log_default_limit_is_20(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    for i in range(25):
+        _log_commit(tmp_path / "github/a", "Ann", f"2026-02-{i + 1:02d}T10:00:00Z", f"n{i}")
+    commits = _log_json(capsys, monkeypatch, tmp_path)
+    assert len(commits) == 20
+    assert commits[0]["subject"] == "n24"
+
+
+def test_log_limit_zero(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    assert _log_json(capsys, monkeypatch, tmp_path, "--limit", "0") == []
+    _run_log(monkeypatch, tmp_path, "--limit", "0")
+    assert capsys.readouterr().out == ""
+
+
+def test_log_since_date(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    assert _subjects(_log_json(capsys, monkeypatch, tmp_path, "--since", "2026-01-02")) == ["a2", "b1"]
+
+
+def test_log_since_relative(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _log_commit(tmp_path / "github/b", "Bob", now, "fresh")
+    assert _subjects(_log_json(capsys, monkeypatch, tmp_path, "--since", "2.weeks")) == ["fresh"]
+    assert _subjects(_log_json(capsys, monkeypatch, tmp_path, "--since", "2 weeks")) == ["fresh"]
+
+
+def test_log_author_matches_name_email_and_case(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    assert _subjects(_log_json(capsys, monkeypatch, tmp_path, "--author", "ann")) == ["a2", "a1"]
+    assert _subjects(_log_json(capsys, monkeypatch, tmp_path, "--author", "BOB")) == ["b1"]
+    assert _subjects(_log_json(capsys, monkeypatch, tmp_path, "--author", "bob@example.com")) == ["b1"]
+
+
+def test_log_author_is_literal(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    assert _log_json(capsys, monkeypatch, tmp_path, "--author", "a.n") == []
+
+
+def test_log_only_platform(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    _log_commit(tmp_path / "gitlab/c", "Cat", "2026-01-04T10:00:00Z", "c1")
+    assert _subjects(_log_json(capsys, monkeypatch, tmp_path, "--only", "gitlab")) == ["c1"]
+    assert _subjects(_log_json(capsys, monkeypatch, tmp_path, "--only", "github")) == ["a2", "b1", "a1"]
+
+
+def test_log_json_keys_and_empty(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    commits = _log_json(capsys, monkeypatch, tmp_path)
+    assert sorted(commits[0]) == ["author", "date", "hash", "name", "path", "platform", "subject"]
+    assert commits[0]["name"] == "a"
+    assert commits[0]["path"] == str(tmp_path / "github/a")
+    assert commits[0]["platform"] == "github"
+    assert commits[0]["date"] == "2026-01-03T10:00:00+00:00"
+    assert _log_json(capsys, monkeypatch, tmp_path, "--author", "nobody") == []
+
+
+def test_log_text_line_format(capsys, monkeypatch, tmp_path):
+    _log_fixture(tmp_path)
+    commit = _log_json(capsys, monkeypatch, tmp_path)[0]
+    _run_log(monkeypatch, tmp_path, "--limit", "1")
+    assert capsys.readouterr().out == f"{commit['hash']} 2026-01-03T10:00:00+00:00 a (Ann) a2\n"
+    _run_log(monkeypatch, tmp_path, "--author", "nobody")
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("args", [["--since", "bogus"], ["--since", "2026-02-30"], ["--limit", "-1"]])
+def test_log_argument_errors_exit_2_before_config(monkeypatch, tmp_path, args):
+    with pytest.raises(SystemExit) as exc:
+        _run_log(monkeypatch, tmp_path, *args)
     assert exc.value.code == 2

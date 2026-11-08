@@ -50,25 +50,25 @@ Apply one section at a time. Check each `Verify:` result before ticking the box.
 
 ## 3. Tests (`tests/test_polygit.py`)
 
-- [ ] 3.1 Add a fixture building the same three repos with fixed dates, and tests for ordering across repos, equal-date tie-break, repo with no commits, uncloned repo skipped, and no fetch (commits only on the remote are not listed)
+- [x] 3.1 Add a fixture building the same three repos with fixed dates, and tests for ordering across repos, equal-date tie-break, repo with no commits, uncloned repo skipped, and no fetch (commits only on the remote are not listed)
    Verify: `.venv/bin/python -m pytest tests/test_polygit.py -q -k log` exits 0 and reports these tests passed
 
-- [ ] 3.2 Add tests for `--limit` (2, default 20 with 25 commits, 0), `--since` (date and relative), `--author` (name, email, case, literal `a.n`), `--only`, `--json` keys and `[]`, text line format, and exit-2 errors for invalid `--limit` and `--since` before the config lookup
+- [x] 3.2 Add tests for `--limit` (2, default 20 with 25 commits, 0), `--since` (date and relative), `--author` (name, email, case, literal `a.n`), `--only`, `--json` keys and `[]`, text line format, and exit-2 errors for invalid `--limit` and `--since` before the config lookup
    Verify: `.venv/bin/python -m pytest tests/test_polygit.py -q -k log` exits 0 and the number of passed tests is at least 14
 
-- [ ] 3.3 Section check: full suite
+- [x] 3.3 Section check: full suite
    Verify: `.venv/bin/python -m pytest tests/test_polygit.py -q` exits 0 with no failures
 
 ## 4. Documentation
 
-- [ ] 4.1 Add a `## log` section to `README.md` with examples for `--limit`, `--since`, `--author`, `--only` and `--json`, stating that it reads local refs only (no fetch)
+- [x] 4.1 Add a `## log` section to `README.md` with examples for `--limit`, `--since`, `--author`, `--only` and `--json`, stating that it reads local refs only (no fetch)
    Verify: `grep -c '^## log' README.md` prints `1`, and `grep -c 'pgit log' README.md` prints at least `4`
 
-- [ ] 4.2 Update `docs/roadmap.md`: list `pgit search` and `pgit log` under "Shipped" and remove their lines from "Repo discovery & navigation"
+- [x] 4.2 Update `docs/roadmap.md`: list `pgit search` and `pgit log` under "Shipped" and remove their lines from "Repo discovery & navigation"
    Verify: `grep -c 'pgit log\|pgit search' docs/roadmap.md` prints `1` (only the Shipped line)
 
-- [ ] 4.3 Section check: docs match the real CLI
-   Verify: `$PG log --help | grep -c -e --since -e --author -e --limit` prints `3`
+- [x] 4.3 Section check: docs match the real CLI
+   Verify: `$PG log --help | grep -c -e --since -e --author -e --limit` prints `4` (the usage line plus one line per option)
 
 ## Workflow follow-up
 

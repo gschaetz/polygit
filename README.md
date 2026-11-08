@@ -60,6 +60,20 @@ pgit search term --json          # output as JSON array with name, path, platfor
 
 Matching is by prefix, word boundary, or substring of the name, path, or `origin` remote URL; misspelled terms are not matched. `--limit N` (default: all) caps the results. `--limit 0` returns nothing. `--only <platform>` filters to one platform before ranking. `--jobs N` sets parallelism for fetching remotes. `TERM` is required and case-insensitive; missing or empty term exits with status 2.
 
+## log
+
+`pgit log` lists recent commits across all cloned repos, newest first. It reads local refs only and never fetches, so run `pgit sync` first to see remote activity:
+
+```bash
+pgit log                       # the 20 newest commits across all repos
+pgit log --limit 50            # change the cap (--limit 0 prints nothing)
+pgit log --since 2.weeks       # YYYY-MM-DD, or N.unit such as "2.weeks" / "3 days"
+pgit log --author gary         # author name or email contains the text (case-insensitive, literal)
+pgit log --only github --json  # JSON array with name, path, platform, hash, author, date, subject
+```
+
+Each line reads `<hash> <date> <name> (<author>) <subject>`. Commits come from each repo's current `HEAD`; repos that are not cloned or have no commits are skipped. Equal dates are ordered by repo path, then hash. An invalid `--since` or `--limit` exits with status 2. `--jobs N` sets parallelism.
+
 ## commit
 
 `pgit commit` commits dirty repos without pushing to remotes:
