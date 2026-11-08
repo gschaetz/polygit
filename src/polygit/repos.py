@@ -4,6 +4,15 @@ from .config import HOSTS, write_config
 from .repo import walk
 
 
+def _confirm(prompt):
+    """Ask a yes/no question; anything but "y", including end of input, means no."""
+    try:
+        return input(prompt).strip().lower() == "y"
+    except EOFError:
+        print()
+        return False
+
+
 def parse_remote_url(url):
     """Parse a git remote URL into (platform, remote_path).
 
@@ -155,7 +164,7 @@ def cmd_repos(config, base, config_path):
     # ── 5. Add untracked ──────────────────────────────────────────────────────
     if untracked:
         print()
-        if input("Add untracked repos to .pgit? [y/N] ").strip().lower() == "y":
+        if _confirm("Add untracked repos to .pgit? [y/N] "):
             for key, (_, remote_url) in sorted(untracked.items()):
                 fs_platform, local_path = key.split("/", 1)
                 _add_to_config(config, fs_platform, local_path, remote_url)
@@ -171,11 +180,11 @@ def cmd_repos(config, base, config_path):
             is_rename    = actual_dir.parent == expected_dir.parent
             print()
             if is_rename:
-                if input(f"Rename {actual_dir.name} → {expected_dir.name}? [y/N] ").strip().lower() == "y":
+                if _confirm(f"Rename {actual_dir.name} → {expected_dir.name}? [y/N] "):
                     actual_dir.rename(expected_dir)
                     print(f"  Renamed.")
             else:
-                if input(f"Add {key} to .pgit with remote override? [y/N] ").strip().lower() == "y":
+                if _confirm(f"Add {key} to .pgit with remote override? [y/N] "):
                     fs_platform, local_path = key.split("/", 1)
                     _add_to_config(config, fs_platform, local_path, remote_url)
                     print(f"  Added {key}")
@@ -185,7 +194,7 @@ def cmd_repos(config, base, config_path):
     # ── 7. Remove missing ─────────────────────────────────────────────────────
     if missing:
         print()
-        if input("Remove missing repos from .pgit? [y/N] ").strip().lower() == "y":
+        if _confirm("Remove missing repos from .pgit? [y/N] "):
             for key in sorted(missing):
                 fs_platform, local_path = key.split("/", 1)
                 for ns_key in list(config.get(fs_platform, {}).keys()):

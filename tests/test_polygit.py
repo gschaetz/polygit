@@ -1,12 +1,13 @@
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timezone
 import pytest
 from pathlib import Path
 from polygit.config import find_config, load_config, write_config
-from polygit.repos import parse_remote_url, del_nested, _add_to_config
+from polygit.repos import parse_remote_url, del_nested, _add_to_config, cmd_repos
 from polygit.repo import _previous_branch, walk, _pull_one, cmd_push, cmd_status, cmd_pull, cmd_sync, cmd_branches, cmd_commit, cmd_merge, cmd_review, cmd_checkout
 
 
@@ -2167,3 +2168,47 @@ def test_checkout_previous_json_only_stdout(capsys, tmp_path):
     _prev_repo(tmp_path, "github", "a", "main")
     cmd_checkout(_prev_cfg("a"), tmp_path, "-", json_output=True)
     assert isinstance(json.loads(capsys.readouterr().out), list)
+
+
+# ── repos prompts ─────────────────────────────────────────────────────────────
+
+def _repos_tree(tmp_path):
+    """A .pgit listing only github/o/tracked, plus github/o/extra on disk and not listed."""
+    for name in ("tracked", "extra"):
+        d = tmp_path / "github" / "o" / name
+        d.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(d)], check=True)
+        _git(d, "remote", "add", "origin", f"git@github.com:o/{name}.git")
+    config_path = tmp_path / ".pgit"
+    config_path.write_text("github:\n  o:\n    tracked:\n")
+    return config_path
+
+
+def _eof(*_):
+    raise EOFError
+
+
+def test_repos_end_of_input_answers_no(capsys, monkeypatch, tmp_path):
+    config_path = _repos_tree(tmp_path)
+    before = config_path.read_text()
+    monkeypatch.setattr("builtins.input", _eof)
+    cmd_repos(load_config(config_path), tmp_path, config_path)
+    assert "github/o/extra" in capsys.readouterr().out
+    assert config_path.read_text() == before
+
+
+def test_repos_missing_prompt_end_of_input_answers_no(capsys, monkeypatch, tmp_path):
+    config_path = _repos_tree(tmp_path)
+    shutil.rmtree(tmp_path / "github" / "o" / "extra")
+    config_path.write_text("github:\n  o:\n    tracked:\n    gone:\n")
+    before = config_path.read_text()
+    monkeypatch.setattr("builtins.input", _eof)
+    cmd_repos(load_config(config_path), tmp_path, config_path)
+    assert config_path.read_text() == before
+
+
+def test_repos_yes_still_adds_untracked(capsys, monkeypatch, tmp_path):
+    config_path = _repos_tree(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda *a: "y")
+    cmd_repos(load_config(config_path), tmp_path, config_path)
+    assert "extra" in config_path.read_text()
