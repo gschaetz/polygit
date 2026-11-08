@@ -2127,3 +2127,43 @@ def test_checkout_previous_already_on_resolved_branch_is_up_to_date(capsys, tmp_
     entry = _co_json(capsys)["a"]
     assert (entry["status"], entry["branch"]) == ("up-to-date", "feat")
     assert _branch_of(a) == "feat"
+
+
+def test_checkout_previous_with_create_exits_2_before_config(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # no .pgit here
+    assert _run_main(monkeypatch, "checkout", "-b", "-") == 2
+    assert "cannot be combined with -b" in capsys.readouterr().err
+
+
+def test_checkout_previous_dash_is_not_an_invalid_name(capsys, tmp_path, monkeypatch):
+    _prev_repo(tmp_path, "github", "a", "main")
+    (tmp_path / ".pgit").write_text("github:\n  a:\n")
+    import sys
+    from polygit.cli import main
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["pgit", "checkout", "-"])
+    main()  # would raise SystemExit(2) if "-" were rejected as an invalid name
+    assert "switched 'feat' -> 'main'" in capsys.readouterr().out
+
+
+def test_checkout_previous_dry_run_changes_nothing(capsys, tmp_path):
+    a = _prev_repo(tmp_path, "github", "a", "main")
+    cmd_checkout(_prev_cfg("a"), tmp_path, "-", dry_run=True, json_output=True)
+    entry = _co_json(capsys)["a"]
+    assert (entry["status"], entry["branch"], entry["previous"]) == ("planned", "main", "feat")
+    assert _branch_of(a) == "feat"
+
+
+def test_checkout_previous_text_line(capsys, tmp_path):
+    _prev_repo(tmp_path, "github", "a", "main")
+    _prev_repo(tmp_path, "github", "b", "main", switch_to=None)
+    cmd_checkout(_prev_cfg("a", "b"), tmp_path, "-")
+    out = capsys.readouterr().out
+    assert "github/a: switched 'feat' -> 'main'" in out
+    assert "github/b: skipped: no previous branch" in out
+
+
+def test_checkout_previous_json_only_stdout(capsys, tmp_path):
+    _prev_repo(tmp_path, "github", "a", "main")
+    cmd_checkout(_prev_cfg("a"), tmp_path, "-", json_output=True)
+    assert isinstance(json.loads(capsys.readouterr().out), list)

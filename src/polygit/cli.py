@@ -127,7 +127,7 @@ def main():
     _add_jobs(review_p)
 
     checkout_p = sub.add_parser("checkout", help="Switch every repo to a branch, or create it with -b")
-    checkout_p.add_argument("branch", metavar="BRANCH", help="Local branch to switch to (or create with -b)")
+    checkout_p.add_argument("branch", metavar="BRANCH", help="Local branch to switch to (or create with -b); '-' for each repo's previous branch")
     checkout_p.add_argument("-b", dest="create", action="store_true", help="Create the branch instead of switching to it")
     checkout_p.add_argument("--from", dest="start", metavar="REF",
                             help="With -b, create the branch at this ref instead of the current HEAD")
@@ -186,7 +186,10 @@ def main():
         if args.start and not args.create:
             print("Error: --from requires -b.", file=sys.stderr)
             sys.exit(2)
-        if not valid_branch_name(args.branch):
+        if args.branch == "-" and args.create:
+            print("Error: '-' (previous branch) cannot be combined with -b.", file=sys.stderr)
+            sys.exit(2)
+        if args.branch != "-" and not valid_branch_name(args.branch):
             print(f"Error: '{args.branch}' is not a valid branch name.", file=sys.stderr)
             sys.exit(2)
 
