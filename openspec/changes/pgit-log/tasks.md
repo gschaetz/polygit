@@ -30,18 +30,18 @@ Apply one section at a time. Check each `Verify:` result before ticking the box.
 
 ## 2. CLI and `cmd_log`
 
-- [ ] 2.1 Add `_since_value` to `src/polygit/cli.py` (accepts `YYYY-MM-DD` as a real date, or `N.unit` / `N unit`; otherwise `argparse.ArgumentTypeError`)
+- [x] 2.1 Add `_since_value` to `src/polygit/cli.py` (accepts `YYYY-MM-DD` as a real date, or `N.unit` / `N unit`; otherwise `argparse.ArgumentTypeError`)
    Verify: `.venv/bin/python -c "from polygit.cli import _since_value as s; print(s('2.weeks'), s('3 days'), s('2026-01-02'))"` prints `2.weeks 3 days 2026-01-02`
    Verify: `.venv/bin/python -c "from polygit.cli import _since_value as s; import argparse\nfor v in ('bogus','2026-02-30','0.weeks.ago'):\n    try: s(v); print('ok', v)\n    except argparse.ArgumentTypeError: print('bad', v)"` prints `bad bogus`, `bad 2026-02-30`, `bad 0.weeks.ago`
 
-- [ ] 2.2 Add the `log` subparser (`--limit` via `_non_negative_int` default 20, `--since`, `--author`, `--only`, `--json`, `--jobs`) and dispatch to `cmd_log`
+- [x] 2.2 Add the `log` subparser (`--limit` via `_non_negative_int` default 20, `--since`, `--author`, `--only`, `--json`, `--jobs`) and dispatch to `cmd_log`
    Verify: `$PG --help | grep -c ' log '` prints `1`
 
-- [ ] 2.3 Implement `cmd_log(config, base, limit, since, author, only, jobs, json_output)` in `src/polygit/repo.py`: text line `<hash> <date> <name> (<author>) <subject>`, JSON array with keys `name`, `path`, `platform`, `hash`, `author`, `date`, `subject`, nothing printed (text) or `[]` (JSON) when empty
+- [x] 2.3 Implement `cmd_log(config, base, limit, since, author, only, jobs, json_output)` in `src/polygit/repo.py`: text line `<hash> <date> <name> (<author>) <subject>`, JSON array with keys `name`, `path`, `platform`, `hash`, `author`, `date`, `subject`, nothing printed (text) or `[]` (JSON) when empty
    Verify: `cd /tmp/pgit-log-demo && $PG log | awk '{print $2, $3}' | head -1` prints `2026-01-03T10:00:00+00:00 a`
    Verify: `cd /tmp/pgit-log-demo && $PG log --json | python3 -c "import sys,json; d=json.load(sys.stdin); print([c['subject'] for c in d], sorted(d[0]))"` prints `['a2', 'b1', 'a1'] ['author', 'date', 'hash', 'name', 'path', 'platform', 'subject']`
 
-- [ ] 2.4 Section check: argument errors, filters and empty output through the real CLI
+- [x] 2.4 Section check: argument errors, filters and empty output through the real CLI
    Verify: `cd /tmp/pgit-log-demo && $PG log --limit 1 --json | python3 -c "import sys,json; print([c['subject'] for c in json.load(sys.stdin)])"` prints `['a2']`
    Verify: `cd /tmp/pgit-log-demo && $PG log --limit 0 --json` prints `[]`, and `$PG log --limit 0` prints nothing
    Verify: `cd /tmp/pgit-log-demo && $PG log --author bob --json | python3 -c "import sys,json; print([c['subject'] for c in json.load(sys.stdin)])"` prints `['b1']`

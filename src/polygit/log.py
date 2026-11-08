@@ -29,6 +29,8 @@ def read_commits(d, limit, since=None, author=None):
         if len(fields) != 5:
             continue
         commit_hash, commit_author, timestamp, date, subject = fields
+        if date.endswith("Z"):
+            date = date[:-1] + "+00:00"
         commits.append({
             "hash": commit_hash,
             "author": commit_author,

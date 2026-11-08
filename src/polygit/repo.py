@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from .config import HOSTS
 from . import search as search_module
+from . import log as log_module
 
 _print_lock = threading.Lock()
 MAX_WORKERS = 8
@@ -1100,6 +1101,19 @@ def cmd_search(config, base, term, limit=None, only=None, jobs=None, json_output
             return
         for r in limited:
             print(f"{r['name']} ({r['path']}) [{r['platform']}]")
+
+
+def cmd_log(config, base, limit=20, since=None, author=None, only=None, jobs=None, json_output=False):
+    """Show recent commits across all cloned repos, newest first (local refs only)."""
+    commits = log_module.collect_commits(config, base, limit, since, author, only, jobs)
+
+    if json_output:
+        keys = ("name", "path", "platform", "hash", "author", "date", "subject")
+        print(json.dumps([{k: c[k] for k in keys} for c in commits]))
+        return
+
+    for c in commits:
+        print(f"{c['hash']} {c['date']} {c['name']} ({c['author']}) {c['subject']}")
 
 
 def valid_branch_name(name):
