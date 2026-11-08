@@ -28,6 +28,16 @@ Replaced an older `sync.sh` script (see recent commit history) — if you find r
 - Every new scenario gets a test in `tests/test_polygit.py`, and user-visible changes update `README.md`.
 - Work on a branch, not directly on `main`.
 
+## Applying a change
+- Apply in chunks (for example one `tasks.md` section at a time), not all tasks in one run.
+- Before checking a task off, run the real CLI path it affects and compare the output with the
+  task's `Verify:` line. Passing unit tests alone is not enough.
+- Tests and README updates are required tasks, not optional follow-ups. Do not skip them.
+- Every option the spec defines must change behavior (no parsed-but-ignored flags), and with
+  `--json` stdout must contain only the JSON value (no stray prints or helper output).
+- If a task is only partly done, leave it unchecked and say what is missing.
+- When the last task is done, run the full test suite and review the diff before archiving.
+
 ## Releases
 - Version bumps are their own commit ("Bump version to X.Y.Z").
 - Tags `v*.*.*` build and publish to PyPI (`.github/workflows/ci.yml`), so never create or push a
