@@ -2,7 +2,7 @@
 
 Ideas for future enhancements to `pgit`. Work through these one by one; each becomes an OpenSpec change (`/opsx:propose`) before any code.
 
-Shipped: `pgit branches` (see `openspec/specs/branches/`).
+Shipped: `pgit branches` (see `openspec/specs/branches/`), `pgit search`, `pgit log`.
 
 ## Hosts & remotes
 - Support additional hosts (Bitbucket, Azure DevOps, generic SSH) beyond GitHub/GitLab.
@@ -10,8 +10,6 @@ Shipped: `pgit branches` (see `openspec/specs/branches/`).
 
 ## Repo discovery & navigation
 - `pgit diff` — aggregate diff across dirty repos.
-- `pgit search <term>` — fuzzy search repos by name/path/remote.
-- `pgit log` — recent commits across repos.
 
 ## Workflow & automation
 - `pgit review` — open PRs for all dirty repos (or mock locally).

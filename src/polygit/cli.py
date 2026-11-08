@@ -1,8 +1,10 @@
+import re
 import sys
 import argparse
+from datetime import date
 from importlib.metadata import version
 from .config import find_config, load_config, HOSTS
-from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push, cmd_branches, cmd_commit, cmd_merge, cmd_review, cmd_checkout, cmd_search, valid_branch_name
+from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push, cmd_branches, cmd_commit, cmd_merge, cmd_review, cmd_checkout, cmd_search, cmd_log, valid_branch_name
 from .repos import cmd_repos
 
 
@@ -24,6 +26,22 @@ def _non_negative_int(value):
     if n < 0:
         raise argparse.ArgumentTypeError(f"must be >= 0, got {n}")
     return n
+
+
+_SINCE_RELATIVE = re.compile(r"^\d+[. ](second|minute|hour|day|week|month|year)s?$")
+
+
+def _since_value(value):
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"invalid date: {value!r}")
+        return value
+    if _SINCE_RELATIVE.match(value):
+        return value
+    raise argparse.ArgumentTypeError(
+        f"invalid --since value {value!r}; use YYYY-MM-DD or N.unit (e.g. 2.weeks)")
 
 
 def _add_jobs(subparser):
@@ -135,6 +153,18 @@ def main():
                           help="Print search results as a JSON list")
     _add_jobs(search_p)
 
+    log_p = sub.add_parser("log", help="Show recent commits across all repos, newest first")
+    log_p.add_argument("--limit", type=_non_negative_int, default=20, metavar="N",
+                       help="Maximum number of commits to show (default: 20)")
+    log_p.add_argument("--since", type=_since_value, default=None, metavar="WHEN",
+                       help="Only commits since YYYY-MM-DD or N.unit (e.g. 2.weeks)")
+    log_p.add_argument("--author", default=None, metavar="TEXT",
+                       help="Only commits whose author name or email contains TEXT (case-insensitive)")
+    log_p.add_argument("--only", dest="only_platform", help="Limit to a single platform (e.g. github)")
+    log_p.add_argument("--json", action="store_true",
+                       help="Print commits as a JSON list")
+    _add_jobs(log_p)
+
     args = parser.parse_args()
 
     if not args.command:
@@ -197,6 +227,7 @@ def main():
         "branches": lambda: cmd_branches(config, base, json_output=args.json, only=only_platform, jobs=jobs),
         "repos":    lambda: cmd_repos(config, base, config_path),
         "search":   lambda: cmd_search(config, base, term=args.term, limit=args.limit, only=only_platform, jobs=jobs, json_output=getattr(args, "json", False)),
+        "log":      lambda: cmd_log(config, base, limit=args.limit, since=args.since, author=args.author, only=only_platform, jobs=jobs, json_output=args.json),
     }
     commands[args.command]()
 
