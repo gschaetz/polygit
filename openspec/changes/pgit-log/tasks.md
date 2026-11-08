@@ -4,7 +4,7 @@ Apply one section at a time. Check each `Verify:` result before ticking the box.
 
 ## 1. Reading and merging commits (`src/polygit/log.py`)
 
-- [ ] 1.1 Create the scratch tree used by every later check
+- [x] 1.1 Create the scratch tree used by every later check
    Run:
    ```
    rm -rf /tmp/pgit-log-demo && mkdir -p /tmp/pgit-log-demo/github /tmp/pgit-log-demo/gitlab && cd /tmp/pgit-log-demo
@@ -15,17 +15,17 @@ Apply one section at a time. Check each `Verify:` result before ticking the box.
    ```
    Verify: `git -C /tmp/pgit-log-demo/github/a log --format=%s | tr '\n' ' '` prints `a2 a1 `, and `git -C /tmp/pgit-log-demo/gitlab/c log` exits 128 (repo `c` has no commits)
 
-- [ ] 1.2 Implement `read_commits(d, limit, since=None, author=None)` in `src/polygit/log.py` returning a list of dicts with `hash`, `author`, `timestamp`, `date`, `subject`; return `[]` when `limit == 0` (no git call) or when git exits non-zero
+- [x] 1.2 Implement `read_commits(d, limit, since=None, author=None)` in `src/polygit/log.py` returning a list of dicts with `hash`, `author`, `timestamp`, `date`, `subject`; return `[]` when `limit == 0` (no git call) or when git exits non-zero
    Verify: `.venv/bin/python -c "from pathlib import Path; from polygit.log import read_commits as r; print([c['subject'] for c in r(Path('/tmp/pgit-log-demo/github/a'), 20)])"` prints `['a2', 'a1']`
    Verify: `.venv/bin/python -c "from pathlib import Path; from polygit.log import read_commits as r; print(r(Path('/tmp/pgit-log-demo/gitlab/c'), 20), r(Path('/tmp/pgit-log-demo/github/a'), 0))"` prints `[] []`
 
-- [ ] 1.3 Pass `--fixed-strings --regexp-ignore-case` with `--author`, and `--since` unchanged
+- [x] 1.3 Pass `--fixed-strings --regexp-ignore-case` with `--author`, and `--since` unchanged
    Verify: `.venv/bin/python -c "from pathlib import Path; from polygit.log import read_commits as r; d=Path('/tmp/pgit-log-demo/github/a'); print(len(r(d,20,author='ANN')), len(r(d,20,author='a.n')), len(r(d,20,since='2026-01-02')))"` prints `2 0 1`
 
-- [ ] 1.4 Implement `merge_commits(per_repo, limit)` (sort by timestamp desc, then path, then hash; slice to `limit`) and `collect_commits(config, base, limit, since, author, only, jobs)` (uses `each_existing_repo` and a thread pool; adds `name`, `path`, `platform` to each commit)
+- [x] 1.4 Implement `merge_commits(per_repo, limit)` (sort by timestamp desc, then path, then hash; slice to `limit`) and `collect_commits(config, base, limit, since, author, only, jobs)` (uses `each_existing_repo` and a thread pool; adds `name`, `path`, `platform` to each commit)
    Verify: `.venv/bin/python -c "import os; os.chdir('/tmp/pgit-log-demo'); from pathlib import Path; from polygit.config import load_config; from polygit.log import collect_commits as c; print([x['subject'] for x in c(load_config('.pgit'), Path('.').resolve(), 20, None, None, None, None)])"` prints `['a2', 'b1', 'a1']`
 
-- [ ] 1.5 Section check: run the module path end to end
+- [x] 1.5 Section check: run the module path end to end
    Verify: `.venv/bin/python -c "import os; os.chdir('/tmp/pgit-log-demo'); from pathlib import Path; from polygit.config import load_config; from polygit.log import collect_commits as c; print(len(c(load_config('.pgit'), Path('.').resolve(), 2, None, None, 'github', None)), len(c(load_config('.pgit'), Path('.').resolve(), 20, None, None, 'gitlab', None)))"` prints `2 0`
 
 ## 2. CLI and `cmd_log`
