@@ -4,7 +4,7 @@ Apply one section at a time. Check each `Verify:` result before ticking the box.
 
 ## 1. Resolve and switch (`src/polygit/repo.py`)
 
-- [ ] 1.1 Create the scratch tree used by every later check: two repos on different default branches, each switched once so a previous branch exists
+- [x] 1.1 Create the scratch tree used by every later check: two repos on different default branches, each switched once so a previous branch exists
    Run:
    ```
    rm -rf /tmp/pgit-co-demo && mkdir -p /tmp/pgit-co-demo/github /tmp/pgit-co-demo/gitlab && cd /tmp/pgit-co-demo
@@ -15,16 +15,16 @@ Apply one section at a time. Check each `Verify:` result before ticking the box.
    ```
    Verify: `for r in github/a gitlab/b gitlab/c; do git -C /tmp/pgit-co-demo/$r branch --show-current; done | tr '\n' ' '` prints `feat feat main `
 
-- [ ] 1.2 Add `_previous_branch(d)` to `src/polygit/repo.py` returning the output of `git rev-parse --abbrev-ref @{-1}`, or `None` when git exits non-zero or prints nothing
+- [x] 1.2 Add `_previous_branch(d)` to `src/polygit/repo.py` returning the output of `git rev-parse --abbrev-ref @{-1}`, or `None` when git exits non-zero or prints nothing
    Verify: `.venv/bin/python -c "from pathlib import Path; from polygit.repo import _previous_branch as p; r=Path('/tmp/pgit-co-demo'); print(p(r/'github/a'), p(r/'gitlab/b'), p(r/'gitlab/c'))"` prints `main master None`
 
-- [ ] 1.3 Make `_checkout_one` and `cmd_checkout`'s dry-run path accept branch `-`: resolve it with `_previous_branch`, return `skipped` / `no previous branch` (with `branch` `None` in the result entry) when unresolved, otherwise continue with the resolved branch through the existing precheck and checkout
+- [x] 1.3 Make `_checkout_one` and `cmd_checkout`'s dry-run path accept branch `-`: resolve it with `_previous_branch`, return `skipped` / `no previous branch` (with `branch` `None` in the result entry) when unresolved, otherwise continue with the resolved branch through the existing precheck and checkout
    Verify: `.venv/bin/python -c "from pathlib import Path; from polygit.repo import _checkout_one as c; r=Path('/tmp/pgit-co-demo'); print(c(r/'gitlab/c','-',False,None)[:2], c(r/'github/a','-',False,None)[:2], c(r/'github/a','-',False,None)[:2])"` prints `('skipped', 'no previous branch') ('switched', '') ('switched', '')`
 
-- [ ] 1.4 Add tests to `tests/test_polygit.py` for: restoring a mixed `main`/`master` tree, toggling twice, no previous branch, previous branch deleted, previous state detached, dirty repo skipped, and already-on-branch `up-to-date`
+- [x] 1.4 Add tests to `tests/test_polygit.py` for: restoring a mixed `main`/`master` tree, toggling twice, no previous branch, previous branch deleted, previous state detached, dirty repo skipped, and already-on-branch `up-to-date`
    Verify: `.venv/bin/python -m pytest tests/test_polygit.py -q -k "checkout and previous"` exits 0 and reports at least 7 passed
 
-- [ ] 1.5 Section check: full suite still passes
+- [x] 1.5 Section check: full suite still passes
    Verify: `.venv/bin/python -m pytest tests/test_polygit.py -q` exits 0 with no failures
 
 ## 2. CLI, output and docs (`src/polygit/cli.py`, `README.md`)
