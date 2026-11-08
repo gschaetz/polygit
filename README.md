@@ -110,6 +110,7 @@ pgit merge main --json     # emit JSON array of merge results
 pgit checkout main                         # switch every repo to local 'main'
 pgit checkout -b feat/login                # create 'feat/login' at each repo's current HEAD
 pgit checkout -b feat/login --from origin/main   # create it at origin/main instead
+pgit checkout -                            # switch every repo back to the branch it was on before
 pgit checkout main --dry-run               # list what would happen; changes nothing
 pgit checkout -b feat/login --json         # emit JSON array of results
 ```
@@ -117,6 +118,8 @@ pgit checkout -b feat/login --json         # emit JSON array of results
 Local work is never overwritten. Switching to an existing branch, or creating from `--from`, skips repos with uncommitted changes (untracked files count). Plain `-b` only adds a branch at the current commit, so it works on a dirty repo and your changes come along, as with `git checkout -b`.
 
 Each repo is reported as `switched`, `created`, `up-to-date` or `failed`, or `skipped` with a reason: dirty working tree, detached HEAD, no commits yet, merge/rebase/cherry-pick in progress, branch not found (without `-b`), branch already exists (with `-b`), or start point not found. A skip in one repo never stops the others, and re-running is safe — repos already on the branch are reported as up to date.
+
+`pgit checkout -` switches each repo to the branch it was on before its last switch (git's `checkout -`), resolved per repo, so a tree mixing `main` and `master` can be restored in one command. Running it twice toggles back. A repo with no previous branch (never switched, previous state detached, or the branch was deleted) is skipped as `no previous branch`. `-` cannot be combined with `-b`.
 
 `pgit checkout` reads local refs only and never fetches, so a branch that exists only on the remote counts as not found; run `pgit sync` first and use `-b <branch> --from origin/<branch>` to start from it. `--from` is only valid with `-b`.
 

@@ -1138,6 +1138,11 @@ def _current_branch(d):
     return _git_out(d, "symbolic-ref", "--short", "-q", "HEAD")
 
 
+def _previous_branch(d):
+    """Branch the repo was on before its last switch (git's @{-1}), or None."""
+    return _git_out(d, "rev-parse", "--abbrev-ref", "@{-1}") or None
+
+
 def _checkout_precheck(d, branch, create, start):
     """Return (status, detail) if the repo should not be changed, else None."""
     if _git_out(d, "rev-parse", "--verify", "-q", "HEAD") is None:
@@ -1168,6 +1173,10 @@ def _checkout_precheck(d, branch, create, start):
 def _checkout_one(d, branch, create, start):
     """Switch to or create branch in the repo at d. Returns (status, detail, previous)."""
     previous = _current_branch(d)
+    if branch == "-":
+        branch = _previous_branch(d)
+        if branch is None:
+            return "skipped", "no previous branch", previous
     skip = _checkout_precheck(d, branch, create, start)
     if skip:
         return skip[0], skip[1], previous
@@ -1206,17 +1215,21 @@ def cmd_checkout(config, base, branch, create=False, start=None, dry_run=False, 
     results_lock = threading.Lock()
 
     def _checkout_task(platform, local_path, d):
-        if dry_run:
+        # Resolve "-" before switching: the switch itself changes @{-1}.
+        target = _previous_branch(d) if branch == "-" else branch
+        if target is None:
+            status, detail, previous = "skipped", "no previous branch", _current_branch(d)
+        elif dry_run:
             previous = _current_branch(d)
-            status, detail = _checkout_precheck(d, branch, create, start) or ("planned", "")
+            status, detail = _checkout_precheck(d, target, create, start) or ("planned", "")
         else:
-            status, detail, previous = _checkout_one(d, branch, create, start)
+            status, detail, previous = _checkout_one(d, target, create, start)
         entry = {
             "platform": platform,
             "path": local_path,
             "status": status,
             "action": "create" if create else "switch",
-            "branch": branch,
+            "branch": target,
             "previous": previous,
             "detail": detail or None,
         }

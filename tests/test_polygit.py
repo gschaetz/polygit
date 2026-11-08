@@ -7,7 +7,7 @@ import pytest
 from pathlib import Path
 from polygit.config import find_config, load_config, write_config
 from polygit.repos import parse_remote_url, del_nested, _add_to_config
-from polygit.repo import walk, _pull_one, cmd_push, cmd_status, cmd_pull, cmd_sync, cmd_branches, cmd_commit, cmd_merge, cmd_review, cmd_checkout
+from polygit.repo import _previous_branch, walk, _pull_one, cmd_push, cmd_status, cmd_pull, cmd_sync, cmd_branches, cmd_commit, cmd_merge, cmd_review, cmd_checkout
 
 
 @pytest.fixture(autouse=True)
@@ -2043,3 +2043,127 @@ def test_log_argument_errors_exit_2_before_config(monkeypatch, tmp_path, args):
     with pytest.raises(SystemExit) as exc:
         _run_log(monkeypatch, tmp_path, *args)
     assert exc.value.code == 2
+
+
+# ── checkout - (previous branch) ──────────────────────────────────────────────
+
+def _prev_repo(tmp_path, platform, rel, default, switch_to="feat"):
+    """Repo on `default` with one commit, switched once to `switch_to` (None: never switched)."""
+    d = tmp_path / platform / rel
+    d.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", default, str(d)], check=True)
+    _commit(d, "init")
+    if switch_to:
+        _git(d, "checkout", "-q", "-b", switch_to)
+    return d
+
+
+def _prev_cfg(*rels):
+    return {"github": {r: None for r in rels}}
+
+
+def test_checkout_previous_restores_mixed_tree(capsys, tmp_path):
+    a = _prev_repo(tmp_path, "github", "a", "main")
+    b = _prev_repo(tmp_path, "github", "b", "master")
+    cmd_checkout(_prev_cfg("a", "b"), tmp_path, "-", json_output=True)
+    out = _co_json(capsys)
+    assert (out["a"]["status"], out["a"]["branch"], out["a"]["previous"]) == ("switched", "main", "feat")
+    assert (out["b"]["status"], out["b"]["branch"]) == ("switched", "master")
+    assert (_branch_of(a), _branch_of(b)) == ("main", "master")
+
+
+def test_checkout_previous_toggles(capsys, tmp_path):
+    a = _prev_repo(tmp_path, "github", "a", "main")
+    cmd_checkout(_prev_cfg("a"), tmp_path, "-", json_output=True)
+    capsys.readouterr()
+    cmd_checkout(_prev_cfg("a"), tmp_path, "-", json_output=True)
+    assert _co_json(capsys)["a"]["status"] == "switched"
+    assert _branch_of(a) == "feat"
+
+
+def test_checkout_previous_none_recorded_is_skipped(capsys, tmp_path):
+    a = _prev_repo(tmp_path, "github", "a", "main", switch_to=None)
+    cmd_checkout(_prev_cfg("a"), tmp_path, "-", json_output=True)
+    entry = _co_json(capsys)["a"]
+    assert (entry["status"], entry["detail"], entry["branch"]) == ("skipped", "no previous branch", None)
+    assert _branch_of(a) == "main"
+
+
+def test_checkout_previous_deleted_branch_is_skipped(capsys, tmp_path):
+    a = _prev_repo(tmp_path, "github", "a", "main")
+    _git(a, "checkout", "-q", "main")
+    _git(a, "checkout", "-q", "feat")
+    _git(a, "checkout", "-q", "main")
+    _git(a, "branch", "-q", "-D", "feat")
+    cmd_checkout(_prev_cfg("a"), tmp_path, "-", json_output=True)
+    entry = _co_json(capsys)["a"]
+    assert (entry["status"], entry["detail"]) == ("skipped", "no previous branch")
+    assert _branch_of(a) == "main"
+
+
+def test_checkout_previous_detached_state_is_skipped(capsys, tmp_path):
+    a = _prev_repo(tmp_path, "github", "a", "main", switch_to=None)
+    _git(a, "checkout", "-q", "--detach")
+    _git(a, "checkout", "-q", "main")
+    cmd_checkout(_prev_cfg("a"), tmp_path, "-", json_output=True)
+    assert _co_json(capsys)["a"]["detail"] == "no previous branch"
+    assert _branch_of(a) == "main"
+
+
+def test_checkout_previous_dirty_repo_is_skipped(capsys, tmp_path):
+    a = _prev_repo(tmp_path, "github", "a", "main")
+    (a / "dirty.txt").write_text("x")
+    cmd_checkout(_prev_cfg("a"), tmp_path, "-", json_output=True)
+    entry = _co_json(capsys)["a"]
+    assert (entry["status"], entry["detail"], entry["branch"]) == ("skipped", "dirty working tree", "main")
+    assert _branch_of(a) == "feat"
+
+
+def test_checkout_previous_already_on_resolved_branch_is_up_to_date(capsys, tmp_path):
+    a = _prev_repo(tmp_path, "github", "a", "main")
+    _git(a, "checkout", "-q", "feat")  # re-checkout of the current branch: @{-1} is "feat"
+    assert _previous_branch(a) == "feat"
+    cmd_checkout(_prev_cfg("a"), tmp_path, "-", json_output=True)
+    entry = _co_json(capsys)["a"]
+    assert (entry["status"], entry["branch"]) == ("up-to-date", "feat")
+    assert _branch_of(a) == "feat"
+
+
+def test_checkout_previous_with_create_exits_2_before_config(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # no .pgit here
+    assert _run_main(monkeypatch, "checkout", "-b", "-") == 2
+    assert "cannot be combined with -b" in capsys.readouterr().err
+
+
+def test_checkout_previous_dash_is_not_an_invalid_name(capsys, tmp_path, monkeypatch):
+    _prev_repo(tmp_path, "github", "a", "main")
+    (tmp_path / ".pgit").write_text("github:\n  a:\n")
+    import sys
+    from polygit.cli import main
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["pgit", "checkout", "-"])
+    main()  # would raise SystemExit(2) if "-" were rejected as an invalid name
+    assert "switched 'feat' -> 'main'" in capsys.readouterr().out
+
+
+def test_checkout_previous_dry_run_changes_nothing(capsys, tmp_path):
+    a = _prev_repo(tmp_path, "github", "a", "main")
+    cmd_checkout(_prev_cfg("a"), tmp_path, "-", dry_run=True, json_output=True)
+    entry = _co_json(capsys)["a"]
+    assert (entry["status"], entry["branch"], entry["previous"]) == ("planned", "main", "feat")
+    assert _branch_of(a) == "feat"
+
+
+def test_checkout_previous_text_line(capsys, tmp_path):
+    _prev_repo(tmp_path, "github", "a", "main")
+    _prev_repo(tmp_path, "github", "b", "main", switch_to=None)
+    cmd_checkout(_prev_cfg("a", "b"), tmp_path, "-")
+    out = capsys.readouterr().out
+    assert "github/a: switched 'feat' -> 'main'" in out
+    assert "github/b: skipped: no previous branch" in out
+
+
+def test_checkout_previous_json_only_stdout(capsys, tmp_path):
+    _prev_repo(tmp_path, "github", "a", "main")
+    cmd_checkout(_prev_cfg("a"), tmp_path, "-", json_output=True)
+    assert isinstance(json.loads(capsys.readouterr().out), list)
