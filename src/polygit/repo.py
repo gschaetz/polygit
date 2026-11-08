@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from .config import HOSTS
+from . import search as search_module
 
 _print_lock = threading.Lock()
 MAX_WORKERS = 8
@@ -1053,6 +1054,52 @@ def cmd_review(config, base, mode="interactive", base_branch=None, dry_run=False
     if json_output:
         results.sort(key=lambda r: (r["platform"], r["path"]))
         print(json.dumps(results))
+
+
+def cmd_search(config, base, term, limit=None, only=None, jobs=None, json_output=False):
+    """Search for repos matching a search term.
+
+    Orchestrates the search module to build and rank results, applies platform
+    filtering via --only, limits results via --limit, and outputs in text or
+    JSON format based on the json_output flag.
+
+    Args:
+        config: The loaded .pgit configuration
+        base: The base directory where repos are stored
+        term: The search term to match against names, paths, and remotes
+        limit: Maximum number of results to return (default: unlimited)
+        only: Optional platform filter ("github" or "gitlab")
+        jobs: Number of parallel git calls for reading remotes (default: 8)
+        json_output: If True, print JSON to stdout; otherwise text format
+
+    Returns:
+        None (prints output directly)
+    """
+    # Platform filtering happens while building the index, before ranking
+    index = search_module.build_search_index(config, base, jobs=jobs, only=only)
+    ranked = search_module.rank_search_results(index, term)
+
+    # Apply limit (0 returns empty results)
+    limited = ranked[:limit]
+
+    # Output results
+    if json_output:
+        results = [
+            {
+                "name": r["name"],
+                "path": r["path"],
+                "platform": r["platform"],
+                "remote": r["remote"],
+                "score": r["score"],
+            }
+            for r in limited
+        ]
+        print(json.dumps(results))
+    else:
+        if not limited:
+            return
+        for r in limited:
+            print(f"{r['name']} ({r['path']}) [{r['platform']}]")
 
 
 def valid_branch_name(name):

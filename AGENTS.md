@@ -36,7 +36,7 @@ Replaced an older `sync.sh` script (see recent commit history) — if you find r
 - Every option the spec defines must change behavior (no parsed-but-ignored flags), and with
   `--json` stdout must contain only the JSON value (no stray prints or helper output).
 - If a task is only partly done, leave it unchecked and say what is missing.
-- When the last task is done, run the full test suite and review the diff before archiving.
+- Never archive with unchecked tasks. When the last task is done, run the full test suite and review the diff, then archive.
 
 ## Releases
 - Version bumps are their own commit ("Bump version to X.Y.Z").

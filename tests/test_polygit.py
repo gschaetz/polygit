@@ -1751,3 +1751,136 @@ def test_checkout_cli_requires_branch(tmp_path, monkeypatch):
 def test_checkout_listed_in_help(capsys, monkeypatch):
     assert _run_main(monkeypatch, "--help") == 0
     assert "checkout" in capsys.readouterr().out
+
+
+# ── search ────────────────────────────────────────────────────────────────────
+
+def _search_fixture(tmp_path):
+    """Four cloned repos: three on github (one without origin), one on gitlab."""
+    layout = {
+        "github/polygit": "https://github.com/example/polygit.git",
+        "github/my-poly": "https://github.com/example/my-poly.git",
+        "github/other": None,
+        "gitlab/widgets": "https://gitlab.com/example/widgets.git",
+    }
+    for rel, remote in layout.items():
+        d = tmp_path / rel
+        d.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(d)], check=True)
+        if remote:
+            _git(d, "remote", "add", "origin", remote)
+    (tmp_path / ".pgit").write_text(
+        "github:\n  polygit:\n  my-poly:\n  other:\ngitlab:\n  widgets:\n"
+    )
+
+
+def _run_search(monkeypatch, tmp_path, *args):
+    import sys
+    from polygit.cli import main
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["pgit", "search", *args])
+    main()
+
+
+def _search_json(capsys, monkeypatch, tmp_path, *args):
+    _run_search(monkeypatch, tmp_path, *args, "--json")
+    return json.loads(capsys.readouterr().out)
+
+
+def test_search_name_prefix_ranks_before_word_boundary(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    results = _search_json(capsys, monkeypatch, tmp_path, "poly")
+    assert [r["name"] for r in results] == ["polygit", "my-poly"]
+
+
+def test_search_results_have_their_own_paths(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    results = _search_json(capsys, monkeypatch, tmp_path, "poly")
+    assert [r["path"] for r in results] == [
+        str(tmp_path / "github" / "polygit"),
+        str(tmp_path / "github" / "my-poly"),
+    ]
+
+
+def test_search_substring_name_match(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    results = _search_json(capsys, monkeypatch, tmp_path, "olyg")
+    assert [r["name"] for r in results] == ["polygit"]
+
+
+def test_search_no_match_is_empty(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    assert _search_json(capsys, monkeypatch, tmp_path, "zzzz") == []
+    _run_search(monkeypatch, tmp_path, "zzzz")
+    assert capsys.readouterr().out == ""
+
+
+def test_search_case_insensitive(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    lower = _search_json(capsys, monkeypatch, tmp_path, "polygit")
+    assert lower
+    assert _search_json(capsys, monkeypatch, tmp_path, "PolyGit") == lower
+
+
+def test_search_path_only_match(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    results = _search_json(capsys, monkeypatch, tmp_path, "/github/")
+    assert {r["name"] for r in results} == {"polygit", "my-poly", "other"}
+
+
+def test_search_name_match_ranks_above_remote_match(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    # "git" is in polygit's name; the other hits are in the "github"/"gitlab" remote URLs
+    results = _search_json(capsys, monkeypatch, tmp_path, "git")
+    assert results[0]["name"] == "polygit"
+    assert all(results[0]["score"] > r["score"] for r in results[1:])
+
+
+def test_search_remote_match_and_missing_origin(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    results = _search_json(capsys, monkeypatch, tmp_path, "example")
+    assert {r["name"] for r in results} == {"polygit", "my-poly", "widgets"}
+    other = _search_json(capsys, monkeypatch, tmp_path, "other")
+    assert other[0]["remote"] == ""
+
+
+def test_search_tie_breaks_by_path(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    results = _search_json(capsys, monkeypatch, tmp_path, "example")
+    paths = [r["path"] for r in results if r["score"] == results[0]["score"]]
+    assert paths == sorted(paths)
+
+
+def test_search_limit(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    assert len(_search_json(capsys, monkeypatch, tmp_path, "example", "--limit", "2")) == 2
+    assert _search_json(capsys, monkeypatch, tmp_path, "example", "--limit", "0") == []
+    assert len(_search_json(capsys, monkeypatch, tmp_path, "example")) == 3
+
+
+def test_search_only_platform(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    results = _search_json(capsys, monkeypatch, tmp_path, "example", "--only", "gitlab")
+    assert [r["name"] for r in results] == ["widgets"]
+    assert all(r["platform"] == "gitlab" for r in results)
+
+
+def test_search_json_fields_and_clean_stdout(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    results = _search_json(capsys, monkeypatch, tmp_path, "polygit")
+    assert set(results[0]) == {"name", "path", "platform", "remote", "score"}
+    assert isinstance(results[0]["score"], (int, float))
+
+
+def test_search_text_output(capsys, monkeypatch, tmp_path):
+    _search_fixture(tmp_path)
+    _run_search(monkeypatch, tmp_path, "polygit")
+    assert capsys.readouterr().out.strip() == f"polygit ({tmp_path / 'github' / 'polygit'}) [github]"
+
+
+@pytest.mark.parametrize("args", [[], [""], ["   "], ["x", "--limit", "-1"], ["x", "--limit", "abc"]])
+def test_search_argument_errors_exit_2_before_config(monkeypatch, tmp_path, args):
+    # No .pgit here: argument errors must be reported before the config lookup.
+    with pytest.raises(SystemExit) as exc:
+        _run_search(monkeypatch, tmp_path, *args)
+    assert exc.value.code == 2

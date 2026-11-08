@@ -47,6 +47,19 @@ pgit branches --only github
 Passing an unknown platform prints an error to stderr and exits 1.
 
 
+## search
+
+`pgit search <TERM>` searches repos by name, path, or remote URL with ranked results:
+
+```bash
+pgit search polygit              # finds "polygit" and other repos containing the term
+pgit search polygit --limit 10   # limit to top 10 matches
+pgit search gsch --only github   # only GitHub repos matching "gsch"
+pgit search term --json          # output as JSON array with name, path, platform, remote, score
+```
+
+Matching is by prefix, word boundary, or substring of the name, path, or `origin` remote URL; misspelled terms are not matched. `--limit N` (default: all) caps the results. `--limit 0` returns nothing. `--only <platform>` filters to one platform before ranking. `--jobs N` sets parallelism for fetching remotes. `TERM` is required and case-insensitive; missing or empty term exits with status 2.
+
 ## commit
 
 `pgit commit` commits dirty repos without pushing to remotes:

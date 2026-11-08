@@ -2,7 +2,7 @@ import sys
 import argparse
 from importlib.metadata import version
 from .config import find_config, load_config, HOSTS
-from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push, cmd_branches, cmd_commit, cmd_merge, cmd_review, cmd_checkout, valid_branch_name
+from .repo import cmd_sync, cmd_status, cmd_pull, cmd_push, cmd_branches, cmd_commit, cmd_merge, cmd_review, cmd_checkout, cmd_search, valid_branch_name
 from .repos import cmd_repos
 
 
@@ -13,6 +13,16 @@ def _positive_int(value):
         raise argparse.ArgumentTypeError(f"invalid int value: {value!r}")
     if n < 1:
         raise argparse.ArgumentTypeError(f"must be a positive integer, got {n}")
+    return n
+
+
+def _non_negative_int(value):
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid int value: {value!r}")
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {n}")
     return n
 
 
@@ -116,6 +126,15 @@ def main():
 
     sub.add_parser("repos", help="Discover drift between .pgit and the filesystem")
 
+    search_p = sub.add_parser("search", help="Search repos by name, path, or remote URL")
+    search_p.add_argument("term", metavar="TERM", nargs="?", help="Search term to match against repo names, paths, and remotes")
+    search_p.add_argument("--limit", type=_non_negative_int, default=None, metavar="N",
+                          help="Maximum number of results to return (default: all)")
+    search_p.add_argument("--only", dest="only_platform", help="Limit to a single platform (e.g. github)")
+    search_p.add_argument("--json", action="store_true",
+                          help="Print search results as a JSON list")
+    _add_jobs(search_p)
+
     args = parser.parse_args()
 
     if not args.command:
@@ -139,6 +158,14 @@ def main():
             sys.exit(2)
         if not valid_branch_name(args.branch):
             print(f"Error: '{args.branch}' is not a valid branch name.", file=sys.stderr)
+            sys.exit(2)
+
+    # Reject missing/empty search term (before config lookup)
+    if args.command == "search":
+        term = getattr(args, "term", None)
+        if term is None or term.strip() == "":
+            print("Error: search requires a TERM argument.", file=sys.stderr)
+            parser.print_usage(file=sys.stderr)
             sys.exit(2)
 
     config_path = find_config()
@@ -169,6 +196,7 @@ def main():
         "checkout": lambda: cmd_checkout(config, base, args.branch, create=args.create, start=args.start, dry_run=args.dry_run, only=only_platform, jobs=jobs, json_output=args.json),
         "branches": lambda: cmd_branches(config, base, json_output=args.json, only=only_platform, jobs=jobs),
         "repos":    lambda: cmd_repos(config, base, config_path),
+        "search":   lambda: cmd_search(config, base, term=args.term, limit=args.limit, only=only_platform, jobs=jobs, json_output=getattr(args, "json", False)),
     }
     commands[args.command]()
 
