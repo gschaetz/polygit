@@ -72,6 +72,15 @@ WARN = f"{_Y}⚠{_RST}"
 NEW  = f"{_C}+{_RST}"
 
 
+def _ask(prompt=""):
+    """input() that returns "" at end of input, which every prompt here treats as blank."""
+    try:
+        return input(prompt)
+    except EOFError:
+        print(file=sys.stderr)
+        return ""
+
+
 def _emit(lines):
     """Print a block of lines atomically."""
     with _print_lock:
@@ -317,7 +326,7 @@ def cmd_push(config, base, mode="interactive", dry_run=False, only=None, jobs=No
         print("Dirty repos:")
         for platform, local_path, _ in dirty:
             print(f"  {platform}/{local_path}")
-        msg = input("\nCommit message for all repos (blank to abort): ").strip()
+        msg = _ask("\nCommit message for all repos (blank to abort): ").strip()
         if not msg:
             print("Aborted.")
             return
@@ -336,7 +345,7 @@ def cmd_push(config, base, mode="interactive", dry_run=False, only=None, jobs=No
             print(f"\n{label}:")
             for line in status.splitlines():
                 print(f"  {line}")
-            msg = input("  Commit message (blank to skip): ").strip()
+            msg = _ask("  Commit message (blank to skip): ").strip()
             if not msg:
                 print("  Skipped.")
                 continue
@@ -408,9 +417,9 @@ def cmd_commit(config, base, mode="interactive", dry_run=False, only=None, jobs=
         if json_output:
             # stdout is reserved for the JSON result
             print(prompt, end="", file=sys.stderr, flush=True)
-            msg = input().strip()
+            msg = _ask().strip()
         else:
-            msg = input(prompt).strip()
+            msg = _ask(prompt).strip()
         if not msg:
             if json_output:
                 print(json.dumps([]))
@@ -432,7 +441,7 @@ def cmd_commit(config, base, mode="interactive", dry_run=False, only=None, jobs=
             print(f"\n{label}:")
             for line in status.splitlines():
                 print(f"  {line}")
-            msg = input("  Commit message (blank to skip): ").strip()
+            msg = _ask("  Commit message (blank to skip): ").strip()
             if not msg:
                 print("  Skipped.")
                 continue
@@ -973,11 +982,11 @@ def cmd_review(config, base, mode="interactive", base_branch=None, dry_run=False
             if diff:
                 for line in diff.splitlines():
                     print(f"    {line}")
-            title = input("  PR title (blank to skip): ").strip()
+            title = _ask("  PR title (blank to skip): ").strip()
             if not title:
                 print("  Skipped.")
                 continue
-            body = input("  PR body (blank for none): ").strip()
+            body = _ask("  PR body (blank for none): ").strip()
             _review_task(c, title, body, dry_run, json_output, results, results_lock)
 
     elif mode == "all":
@@ -988,9 +997,9 @@ def cmd_review(config, base, mode="interactive", base_branch=None, dry_run=False
         prompt = "\nPR title for all repos (blank to abort): "
         if json_output:
             print(prompt, end="", file=sys.stderr, flush=True)
-            title = input().strip()
+            title = _ask().strip()
         else:
-            title = input(prompt).strip()
+            title = _ask(prompt).strip()
         if not title:
             if json_output:
                 print(json.dumps([]))
@@ -1000,9 +1009,9 @@ def cmd_review(config, base, mode="interactive", base_branch=None, dry_run=False
         body_prompt = "\nPR body (blank for none): "
         if json_output:
             print(body_prompt, end="", file=sys.stderr, flush=True)
-            body = input().strip()
+            body = _ask().strip()
         else:
-            body = input(body_prompt).strip()
+            body = _ask(body_prompt).strip()
         if dry_run:
             for c in candidates:
                 remote_url = _git_out(c["d"], "remote", "get-url", c["remote"]) or ""

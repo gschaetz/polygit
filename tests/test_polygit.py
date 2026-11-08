@@ -2212,3 +2212,45 @@ def test_repos_yes_still_adds_untracked(capsys, monkeypatch, tmp_path):
     monkeypatch.setattr("builtins.input", lambda *a: "y")
     cmd_repos(load_config(config_path), tmp_path, config_path)
     assert "extra" in config_path.read_text()
+
+
+# ── interactive prompts at end of input ───────────────────────────────────────
+
+@pytest.mark.parametrize("mode", ["all", "interactive"])
+def test_commit_end_of_input_commits_nothing(capsys, tmp_path, monkeypatch, mode):
+    d = _dirty_clone(tmp_path)
+    monkeypatch.setattr("builtins.input", _eof)
+    cmd_commit(CFG, tmp_path, mode=mode)
+    assert _commit_count(d) == 1
+
+
+@pytest.mark.parametrize("mode", ["all", "interactive"])
+def test_push_end_of_input_commits_nothing(capsys, tmp_path, monkeypatch, mode):
+    d = _dirty_clone(tmp_path)
+    monkeypatch.setattr("builtins.input", _eof)
+    cmd_push(CFG, tmp_path, mode=mode)
+    assert _commit_count(d) == 1
+
+
+def test_commit_json_end_of_input_keeps_stdout_json(capsys, tmp_path, monkeypatch):
+    _dirty_clone(tmp_path)
+    monkeypatch.setattr("builtins.input", _eof)
+    cmd_commit(CFG, tmp_path, mode="all", json_output=True)
+    assert json.loads(capsys.readouterr().out) == []
+
+
+@pytest.mark.parametrize("mode", ["all", "interactive"])
+def test_review_end_of_input_opens_nothing(capsys, tmp_path, monkeypatch, mode):
+    _make_review_repo(tmp_path)
+    monkeypatch.setenv("GH_TOKEN", "tok")
+    calls = _mock_urlopen(monkeypatch)
+    monkeypatch.setattr("builtins.input", _eof)
+    cmd_review(CFG, tmp_path, mode=mode)
+    assert calls == []
+
+
+def test_review_json_end_of_input_keeps_stdout_json(capsys, tmp_path, monkeypatch):
+    _make_review_repo(tmp_path)
+    monkeypatch.setattr("builtins.input", _eof)
+    cmd_review(CFG, tmp_path, mode="all", json_output=True)
+    assert json.loads(capsys.readouterr().out) == []
